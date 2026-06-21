@@ -1,0 +1,40 @@
+# ─── 参考文档（不上传）───
+evomap-wiki-docs/
+evomap-skill-docs/
+poster-design/
+poster-output/
+poster-a4-adjusted/
+poster-output-a4/
+
+# ─── Agent 配置 ───
+.claude/
+
+# ─── 根目录参考文档（不上传）───
+/EvoMap*.md
+/关于EvoMap的对话.md
+/方案E*.md
+/快速导航.md
+/术语表.md
+/黑客松项目建议汇总.md
+/README.md
+
+# ─── 敏感信息 ───
+.env
+.env.local
+*.log
+
+# ─── 依赖 ───
+node_modules/
+
+# ─── IDE ───
+.vscode/
+.idea/
+
+# ─── 系统 ───
+.DS_Store
+Thumbs.db
+
+# ─── 草稿/临时文件 ───
+gen_a4.py
+test_api.py
+generate_posters.py

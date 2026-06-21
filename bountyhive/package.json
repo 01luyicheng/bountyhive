@@ -1,0 +1,30 @@
+{
+  "name": "bountyhive",
+  "version": "0.1.0",
+  "description": "BountyHive - EvoMap 悬赏市场蜂群接单进化体（方案 E）",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "server": "node src/server.js",
+    "heartbeat": "node src/demo/heartbeat.js",
+    "demo": "node src/demo/orchestrator.js",
+    "start": "concurrently -n server,heartbeat -c green,cyan \"npm:server\" \"npm:heartbeat\"",
+    "self-test": "node src/lib/self-test.js",
+    "dev": "node scripts/start-all.js",
+    "dev:mock": "node scripts/start-all.js --mock",
+    "setup": "node scripts/dev-setup.js",
+    "stop": "node scripts/stop-all.js",
+    "test": "node --test test/mock.test.js test/server.test.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5"
+  },
+  "devDependencies": {
+    "concurrently": "^9.0.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
