@@ -98,6 +98,14 @@ export class EvoMapClient {
           await new Promise((r) => setTimeout(r, retryMs));
           continue;
         }
+        // 5xx 服务端错误：退避重试（5s → 15s → 60s）
+        if (res.status >= 500 && attempt < MAX_RETRIES) {
+          const backoffs = [5000, 15000, 60000];
+          const waitMs = backoffs[attempt] || 60000;
+          console.log(`[EvoMap] HTTP ${res.status} ${method} ${path} — 重试 ${attempt + 1}/${MAX_RETRIES}，等待 ${waitMs / 1000}s...`);
+          await new Promise((r) => setTimeout(r, waitMs));
+          continue;
+        }
         const hint = this._errorHint(path, `http_${res.status}`);
         const bodyPreview = text.slice(0, 500);
         const err = new Error(
@@ -270,17 +278,14 @@ export class EvoMapClient {
   }
 
   /**
-   * 列出可用任务
+   * 列出可用任务（通过 fetch + include_tasks 获取）
    * @param {string} nodeId
    * @param {string} nodeSecret
    * @param {object} params - { reputation, limit, min_bounty }
-   * @returns {Promise<object>}
+   * @returns {Promise<object>} { tasks: [...], ... }
    */
   async taskList(nodeId, nodeSecret, params = {}) {
-    return this._request('GET', '/a2a/task/list', {
-      token: nodeSecret,
-      query: params,
-    });
+    return this.fetch(nodeId, nodeSecret, { include_tasks: true });
   }
 
   /**

@@ -9,6 +9,7 @@ import {
   makeEvolutionEventTemplate,
   CHAIN_ID,
 } from './agent-templates.js';
+import { PROBLEM_B } from './humaneval-problems.js';
 import { loadAgentCreds } from './agent-creds.js';
 
 function defaultLog(msg, level = 'info') {
@@ -24,12 +25,12 @@ export async function loadAgentBCreds(client, log = defaultLog) {
 function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
 
 async function findFailedCapsule(client, nodeId, nodeSecret, aCapsuleId, log, signal) {
-  log('semantic-search 搜失败经验: q=useEffect dependency, outcome=failed');
-  for (let attempt = 1; attempt <= 8; attempt++) {
+  log('semantic-search 搜失败经验: q=empty list IndexError, outcome=failed');
+  for (let attempt = 1; attempt <= 4; attempt++) {
     if (signal?.aborted) throw new Error('search cancelled');
     try {
       const res = await client.semanticSearch(
-        nodeId, nodeSecret, 'useEffect dependency',
+        nodeId, nodeSecret, 'empty list IndexError',
         { outcome: 'failed', limit: 20, include_context: true }
       );
       const items = res?.results || res?.assets || res?.items || [];
@@ -40,21 +41,21 @@ async function findFailedCapsule(client, nodeId, nodeSecret, aCapsuleId, log, si
         log(`未精确匹配到 A 的 Capsule，取第一条: ${items[0].asset_id || items[0].id}`);
         return items[0];
       }
-      log(`第 ${attempt} 次搜索无结果，等待 12 秒后重试（semantic-search 有缓存延迟）...`);
-      await sleep(12000);
+      log(`第 ${attempt} 次搜索无结果，等待 8 秒后重试（semantic-search 有缓存延迟）...`);
+      await sleep(8000);
     } catch (err) {
       const is429 = err.status === 429;
       if (is429) {
-        let retryMs = 12000;
+        let retryMs = 8000;
         try { const body = JSON.parse(err.body?.toString?.() || '{}'); retryMs = (body.retry_after_ms || 10000) + 2000; } catch {}
-        log(`⚠️ 限流，等待 ${Math.round(retryMs/1000)}s 后重试...`, 'warn');
+        log(`限流，等待 ${Math.round(retryMs/1000)}s 后重试...`);
         await sleep(retryMs);
       } else {
         throw err;
       }
     }
   }
-  log(`⚠️ semantic-search 8 次重试后仍未搜到，直接使用 a_capsule_id=${aCapsuleId}`, 'warn');
+  log(`semantic-search 4 次重试后仍未搜到，直接使用 a_capsule_id=${aCapsuleId}`);
   return { asset_id: aCapsuleId };
 }
 
@@ -63,23 +64,43 @@ export async function runAgentB(client, nodeId, nodeSecret, context, log = defau
   if (!aCapsuleId) throw new Error('[Agent B] 缺少 a_capsule_id');
 
   if (taskId) {
+    let discoveredTask = null;
     try {
-      log(`尝试认领任务: task_id=${taskId}`);
-      await client.taskClaim(nodeId, nodeSecret, taskId);
+      log(`通过 fetch 发现任务: query tasks for ${taskId}`);
+      const fetchRes = await client.fetch(nodeId, nodeSecret, { include_tasks: true });
+      const tasks = fetchRes?.tasks || [];
+      discoveredTask = tasks.find((t) =>
+        t.task_id === taskId || t.bounty_id === taskId || t.question_id === taskId
+      );
+      if (discoveredTask) {
+        log(`发现匹配任务: task_id=${discoveredTask.task_id}, status=${discoveredTask.status}`);
+      } else {
+        log(`未找到匹配任务（共 ${tasks.length} 个任务），使用原始 taskId 继续`);
+        discoveredTask = { task_id: taskId };
+      }
+    } catch (err) {
+      log(`fetch tasks 失败（${err.message}），使用原始 taskId 继续`);
+      discoveredTask = { task_id: taskId };
+    }
+
+    const claimTaskId = discoveredTask.task_id || taskId;
+    try {
+      log(`尝试认领任务: task_id=${claimTaskId}`);
+      await client.taskClaim(nodeId, nodeSecret, claimTaskId);
       log(`认领成功`);
     } catch (err) {
-      log(`⚠️ task/claim 不可用（${err.message}），跳过认领，直接走 publish 链路`, 'warn');
+      log(`task/claim 不可用（${err.message}），跳过认领，直接走 publish 链路`);
     }
 
     try {
-      log(`尝试 bid/place: bounty_id=${taskId}`);
-      await client.bidPlace(nodeId, nodeSecret, taskId, 0);
+      log(`尝试 bid/place: bounty_id=${claimTaskId}`);
+      await client.bidPlace(nodeId, nodeSecret, claimTaskId, 0);
       log(`bid/place 成功`);
     } catch (err) {
-      log(`⚠️ bid/place 不可用，跳过`);
+      log(`bid/place 不可用，跳过`);
     }
   } else {
-    log(`⚠️ 无 task_id，跳过 task/claim 和 bid/place，直接搜 A 的 Capsule`, 'warn');
+    log(`无 task_id，跳过 task/claim 和 bid/place，直接搜 A 的 Capsule`);
   }
 
   const failedCapsule = await findFailedCapsule(client, nodeId, nodeSecret, aCapsuleId, log, signal);
@@ -88,10 +109,10 @@ export async function runAgentB(client, nodeId, nodeSecret, context, log = defau
   await client.fetch(nodeId, nodeSecret, { asset_ids: [aCapsuleId] });
   log(`fetch 完成，A 应获得积分`);
 
-  log('基于 A 的失败经验避开雷区，构造成功方案（含 useCallback）');
-  const gene = makeAgentBGeneTemplate(aGeneId);
+  log('基于 A 的失败经验避开雷区，添加空集合守卫修复 rolling_max');
+  const gene = makeAgentBGeneTemplate(aGeneId, PROBLEM_B);
   withAssetId(gene);
-  const capsule = makeAgentBCapsuleTemplate(aCapsuleId, aCapsuleId);
+  const capsule = makeAgentBCapsuleTemplate(aCapsuleId, aCapsuleId, PROBLEM_B);
   withAssetId(capsule);
   const event = makeEvolutionEventTemplate('repair', { status: 'success', score: 0.9 }, 2, 3);
   event.type = 'EvolutionEvent';
@@ -113,7 +134,7 @@ export async function runAgentB(client, nodeId, nodeSecret, context, log = defau
       await client.taskComplete(nodeId, nodeSecret, taskId, publishedCapsule.asset_id);
       log(`task/complete 完成`);
     } catch (err) {
-      log(`⚠️ task/complete 不可用（${err.message}），跳过（Demo 中直接展示 publish 链路）`, 'warn');
+      log(`task/complete 不可用（${err.message}），跳过（Demo 中直接展示 publish 链路）`);
     }
   }
 

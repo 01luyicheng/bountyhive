@@ -12,6 +12,7 @@
     "self-test": "node src/lib/self-test.js",
     "dev": "node scripts/start-all.js",
     "dev:mock": "node scripts/start-all.js --mock",
+    "expo": "node scripts/expo-launch.js",
     "setup": "node scripts/dev-setup.js",
     "stop": "node scripts/stop-all.js",
     "test": "node --test test/mock.test.js test/server.test.js"

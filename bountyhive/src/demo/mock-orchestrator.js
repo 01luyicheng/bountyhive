@@ -228,6 +228,7 @@ export async function runMockOrchestrator(options = {}) {
     const chainResult = getMockChain(CHAIN_ID);
     result.chain = { ...chainResult, mock: true };
     log(`能力链查询完成，共 ${chainResult.assets.length} 个资产（A→B→C）`);
+    if (storyMode) storyAct4(result.chain);
 
     await realSleep(500);
     log(`查询 A 的积分流水: GET /billing/earnings/${MOCK_NODE_IDS.a}`);
@@ -240,6 +241,7 @@ export async function runMockOrchestrator(options = {}) {
       mock: true,
     };
     log('积分流水查询完成');
+    if (storyMode) storyAct5(result.earnings);
 
     result.completed_steps.push('chain-earnings');
     result.stepTimings.push({ step: 'chain-earnings', duration_ms: Date.now() - stepStart });
@@ -262,8 +264,6 @@ export async function runMockOrchestrator(options = {}) {
     setPhase('done');
     await realSleep(1000);
     if (storyMode) {
-      storyAct4(result.chain);
-      storyAct5(result.earnings);
       storyFinale(TAGLINE, totalMs, result.simulated_savings);
     } else {
       log('━━━━━━━━━━ Demo 完成 ━━━━━━━━━━', 'phase');

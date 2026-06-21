@@ -1,12 +1,11 @@
 // src/demo/agent-c.js
 // Agent C：经验复用者（秒级修复，溯源 B）
-// 参考：方案E-BountyHive-修正版.md 第二节"高潮"阶段
 //
 // 动作：
 //   1. hello（用 C_NODE_ID/C_NODE_SECRET）
 //   2. semantic-search 搜到 A 失败 + B 成功
 //   3. fetch B 的成功 Capsule
-//   4. 秒级修复（直接复用 B 的策略），publish success Capsule（溯源 B）
+//   4. 秒级修复（直接复用 B 的空集合守卫策略），publish success Capsule（溯源 B）
 
 import 'dotenv/config';
 import EvoMapClient from '../lib/evomap-client.js';
@@ -20,6 +19,7 @@ import {
   makeEvolutionEventTemplate,
   CHAIN_ID,
 } from './agent-templates.js';
+import { PROBLEM_C } from './humaneval-problems.js';
 
 function defaultLog(msg, level = 'info') {
   if (_STORY_MODE_C && level === 'warn') level = 'info';
@@ -27,30 +27,19 @@ function defaultLog(msg, level = 'info') {
   console.log(`[${ts}] [Agent C] ${msg}`);
 }
 
-/**
- * 加载 C 凭证
- */
 export async function loadAgentCCreds(client, log = defaultLog) {
   return loadAgentCreds(client, 'C', 'BountyHive Agent C', log);
 }
 
-/**
- * 通过 semantic-search 找到 B 的 success Capsule
- * @param {EvoMapClient} client
- * @param {string} nodeId
- * @param {string} nodeSecret
- * @param {string} bCapsuleId - B 的 capsule asset_id
- * @param {Function} log
- */
 function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
 
 async function findSuccessCapsule(client, nodeId, nodeSecret, bCapsuleId, log, signal) {
-  log('semantic-search 搜成功经验: q=useEffect dependency, outcome=success');
-  for (let attempt = 1; attempt <= 8; attempt++) {
+  log('semantic-search 搜成功经验: q=empty collection guard, outcome=success');
+  for (let attempt = 1; attempt <= 4; attempt++) {
     if (signal?.aborted) throw new Error('search cancelled');
     try {
       const res = await client.semanticSearch(
-        nodeId, nodeSecret, 'useEffect dependency useCallback',
+        nodeId, nodeSecret, 'empty collection guard',
         { outcome: 'success', limit: 20, include_context: true }
       );
       const items = res?.results || res?.assets || res?.items || [];
@@ -61,33 +50,24 @@ async function findSuccessCapsule(client, nodeId, nodeSecret, bCapsuleId, log, s
         log(`未精确匹配，取第一条: ${items[0].asset_id || items[0].id}`);
         return items[0];
       }
-      log(`第 ${attempt} 次搜索无结果，等待 12 秒后重试...`);
-      await sleep(12000);
+      log(`第 ${attempt} 次搜索无结果，等待 8 秒后重试...`);
+      await sleep(8000);
     } catch (err) {
       const is429 = err.status === 429;
       if (is429) {
-        let retryMs = 12000;
+        let retryMs = 8000;
         try { const body = JSON.parse(err.body?.toString?.() || '{}'); retryMs = (body.retry_after_ms || 10000) + 2000; } catch {}
-        log(`⚠️ 限流，等待 ${Math.round(retryMs/1000)}s 后重试...`, 'warn');
+        log(`限流，等待 ${Math.round(retryMs/1000)}s 后重试...`);
         await sleep(retryMs);
       } else {
         throw err;
       }
     }
   }
-  log(`⚠️ semantic-search 8 次重试后仍未搜到，直接使用 b_capsule_id=${bCapsuleId}`, 'warn');
+  log(`semantic-search 4 次重试后仍未搜到，直接使用 b_capsule_id=${bCapsuleId}`);
   return { asset_id: bCapsuleId };
 }
 
-/**
- * Agent C 完整动作
- * @param {EvoMapClient} client
- * @param {string} nodeId
- * @param {string} nodeSecret
- * @param {object} context - { b_capsule_id, b_gene_id }
- * @param {Function} log
- * @returns {Promise<object>} { gene_id, capsule_id, publish_res, fetch_res }
- */
 export async function runAgentC(client, nodeId, nodeSecret, context, log = defaultLog, signal) {
   const { b_capsule_id: bCapsuleId, b_gene_id: bGeneId } = context;
   if (!bCapsuleId) {
@@ -98,10 +78,10 @@ export async function runAgentC(client, nodeId, nodeSecret, context, log = defau
   log('同时搜 A 失败 + B 成功经验...');
   const successCapsule = await findSuccessCapsule(client, nodeId, nodeSecret, bCapsuleId, log, signal);
 
-  // 也搜一下 A 的失败经验（展示用，方案 E 第二节"高潮"）
+  // 也搜一下 A 的失败经验（展示用）
   try {
     const failedRes = await client.semanticSearch(
-      nodeId, nodeSecret, 'useEffect',
+      nodeId, nodeSecret, 'IndexError empty list',
       { limit: 5 }
     );
     const failedItems = failedRes?.results || failedRes?.assets || failedRes?.items || [];
@@ -115,15 +95,14 @@ export async function runAgentC(client, nodeId, nodeSecret, context, log = defau
   const fetchRes = await client.fetch(nodeId, nodeSecret, { asset_ids: [bCapsuleId] });
   log(`fetch 完成，B 应获得 0-12 积分`);
 
-  // ── 第 4 步：秒级修复（直接复用 B 的策略），publish success Capsule ──
-  log('秒级修复：直接复用 B 的策略（useCallback + 依赖数组）');
-  const gene = makeAgentCGeneTemplate(bGeneId);
+  // ── 第 4 步：秒级修复（直接复用 B 的空集合守卫），publish success Capsule ──
+  log('秒级修复：直接复用 B 的空集合守卫策略');
+  const gene = makeAgentCGeneTemplate(bGeneId, PROBLEM_C);
   withAssetId(gene);
 
-  const capsule = makeAgentCCapsuleTemplate(bCapsuleId, bCapsuleId);
+  const capsule = makeAgentCCapsuleTemplate(bCapsuleId, bCapsuleId, PROBLEM_C);
   withAssetId(capsule);
 
-  // EvolutionEvent
   const event = makeEvolutionEventTemplate('repair', { status: 'success', score: 0.95 }, 1, 1);
   event.type = 'EvolutionEvent';
   event.capsule_id = capsule.asset_id;
@@ -132,7 +111,6 @@ export async function runAgentC(client, nodeId, nodeSecret, context, log = defau
 
   const assets = [gene, capsule, event];
 
-  // validate 预检（含 Capsule 未知字段 fallback）
   const publishAssets = await tryPublishWithFallback(
     client,
     nodeId,
@@ -142,7 +120,6 @@ export async function runAgentC(client, nodeId, nodeSecret, context, log = defau
     log
   );
 
-  // publish
   log(`发布成功 Capsule: capsule_success_002（溯源 B: ${bCapsuleId}）`);
   const publishRes = await client.publish(nodeId, nodeSecret, publishAssets, CHAIN_ID);
   const publishedCapsule = publishAssets.find((a) => a.type === 'Capsule');

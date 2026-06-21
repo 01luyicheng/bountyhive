@@ -486,8 +486,8 @@ app.post('/api/demo/start', async (req, res) => {
             console.error(`[BountyHive]    提示: 运行 demo 一次，agent-hello 会注册新节点并打印 claim_url`);
           } else if (/network|ENOTFOUND|ECONNREFUSED|fetch failed/i.test(msg)) {
             console.error(`[BountyHive] ⚠️  Hub 不可达 (${HUB_URL})，请检查网络连接`);
-            console.error(`[BountyHive]    提示: 可设置 MOCK_MODE=true 切换到 mock 模式`);
           }
+          console.error(`[BountyHive]    提示: 可设置 MOCK_MODE=true 切换到 mock 模式`);
         }
       } finally {
         // 运行完成后保留 currentRunId，让前端仍能查询到本次 Demo 结果

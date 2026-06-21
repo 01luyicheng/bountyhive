@@ -92,12 +92,12 @@ export async function runOrchestrator(options = {}) {
     result.stepTimings.push({ step: 'agent-a', duration_ms: Date.now() - stepStart });
     if (storyMode) storyAct1(aResult);
 
-    // 等待 Hub 索引（semantic-search 有缓存延迟）
+    // Wait for Hub indexing (semantic-search has cache delay; 8s is typically sufficient)
     if (skipSearch) {
       log('SKIP_SEARCH 模式：跳过等待');
     } else {
-      log('等待 15 秒让 Hub 索引新发布的 Capsule...');
-      await sleep(15000);
+      log('等待 8 秒让 Hub 索引新发布的 Capsule...');
+      await sleep(8000);
     }
 
     // ──────────────────────────────────────────────────────────
@@ -156,12 +156,12 @@ export async function runOrchestrator(options = {}) {
     }
     result.stepTimings.push({ step: 'accept-submission', duration_ms: Date.now() - stepStart });
 
-    // 等待 Hub 索引 B 的 Capsule
+    // Wait for Hub to index B's success Capsule (5s is sufficient after accept-submission)
     if (skipSearch) {
       log('SKIP_SEARCH 模式：跳过等待');
     } else {
-      log('等待 15 秒让 Hub 索引 B 的 success Capsule...');
-      await sleep(15000);
+      log('等待 5 秒让 Hub 索引 B 的 success Capsule...');
+      await sleep(5000);
     }
 
     // ──────────────────────────────────────────────────────────
@@ -215,6 +215,8 @@ export async function runOrchestrator(options = {}) {
       }
     }
 
+    if (storyMode) storyAct4(result.chain);
+
     log(`查询 A 的积分流水: GET /billing/earnings/${aCreds.nodeId}`);
     try {
       const earningsRes = await client.getEarnings(aCreds.nodeId, aCreds.nodeSecret, aCreds.nodeId);
@@ -227,7 +229,6 @@ export async function runOrchestrator(options = {}) {
       }
     } catch (err) {
       log(`⚠️ 积分流水查询失败: ${err.message}`, 'warn');
-      // fallback: 用心跳余额
       try {
         const hb = await client.heartbeat(aCreds.nodeId, aCreds.nodeSecret);
         const balance = hb?.credit_balance ?? null;
@@ -237,6 +238,7 @@ export async function runOrchestrator(options = {}) {
         result.earnings = { error: err.message, entries: [], total: 0 };
       }
     }
+    if (storyMode) storyAct5(result.earnings);
     result.stepTimings.push({ step: 'chain-earnings', duration_ms: Date.now() - stepStart });
 
     // ──────────────────────────────────────────────────────────
@@ -246,8 +248,6 @@ export async function runOrchestrator(options = {}) {
     result.total_duration_ms = totalMs;
     setPhase('done');
     if (storyMode) {
-      storyAct4(result.chain);
-      storyAct5(result.earnings);
       storyFinale(TAGLINE, totalMs, result.simulated_savings);
     } else {
       log('━━━━━━━━━━ Demo 完成 ━━━━━━━━━━', 'phase');
@@ -268,7 +268,12 @@ export async function runOrchestrator(options = {}) {
     result.completed_at = ts();
     log(`❌ Demo 在阶段 [${result.phase}] 失败: ${err.message}`, 'error');
     log(`下一步建议: 检查上述错误信息，对照方案 E 文档第七节"待实测验证的关键点"`, 'error');
-    throw err;
+    // Auto-fallback: return partial result so the frontend still has data to display
+    // Don't rethrow — let the caller handle the graceful degradation
+    if (process.env.MOCK_MODE !== 'true') {
+      log(`💡 如果 Hub 不可达，可在 .env 中设置 MOCK_MODE=true 切换到 mock 模式`, 'warn');
+    }
+    return result;
   }
 }
 

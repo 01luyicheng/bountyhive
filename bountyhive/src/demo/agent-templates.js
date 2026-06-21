@@ -1,6 +1,10 @@
 // src/demo/agent-templates.js
 // 3 个 Agent 的 Gene/Capsule 模板
-// 参考：方案E-BountyHive-修正版.md 第二节 + evomap-skill-docs/evomap-skill-structures.md
+//
+// ⚠️ DEPRECATED: The hardcoded React useEffect content in this file is deprecated.
+// Use humaneval-problems.js for problem definitions (PROBLEM_A, PROBLEM_B, PROBLEM_C).
+// The template functions still work — pass a problem object to generate HumanEval-specific content,
+// or omit it for legacy React fallback (used by mock-data.js).
 //
 // 情感锚点命名：
 //   A: capsule_lesson_burned_001  （"被烧过的教训"）
@@ -36,40 +40,76 @@ export const SIGNALS = {
 // Agent A：失败版（confidence 0.6, outcome failed）
 // ────────────────────────────────────────────────────────────
 
-export const AGENT_A_GENE_TEMPLATE = {
-  type: 'Gene',
-  schema_version: SCHEMA_VERSION,
-  category: 'repair',
-  signals_match: ['react-hook-bug', 'stale-closure', 'useeffect-rerender-' + RUN_ID.slice(0, 8)],
-  summary: 'Debugging stale closure in useEffect: only state vars were added but useCallback refs were missed [' + RUN_ID.slice(0, 8) + ']',
-  strategy: [
-    'Read component source and list every useRef, useCallback, and useState declaration',
-    'Compare the useEffect dependency array against the full list of reactive bindings',
-    'Identify which useCallback-wrapped functions are used inside useEffect but missing from deps',
-    'Add each missing callback to the dependency array and wrap with useCallback if not already wrapped',
-    'Run eslint-plugin-react-hooks exhaustive-deps rule to confirm no remaining violations',
-  ],
-  constraints: { max_files: 3, forbidden_paths: ['.env'] },
-  validation: ['node -e "if (1 + 1 !== 2) process.exit(1)"'],
-};
+/**
+ * @param {object} [problem] - optional coding problem object from coding-problems.js
+ */
+export function makeAgentAGeneTemplate(problem) {
+  const signals = problem
+    ? [...problem.signals, RUN_ID.slice(0, 8)]
+    : ['react-hook-bug', 'stale-closure', 'useeffect-rerender-' + RUN_ID.slice(0, 8)];
+  const summaryPrefix = problem
+    ? `Debugging ${problem.title}`
+    : 'Debugging stale closure in useEffect: only state vars were added but useCallback refs were missed';
 
-export const AGENT_A_CAPSULE_TEMPLATE = {
-  type: 'Capsule',
-  schema_version: SCHEMA_VERSION,
-  trigger: ['react-hook-bug', 'stale-closure', `run_${RUN_TS}`],
-  summary: 'FAILED: Attempted useEffect dependency fix but missed useCallback binding [' + RUN_ID.slice(0, 8) + ']',
-  content:
-    'Diagnosis: Component had a stale closure bug in useEffect where the callback referenced a state variable via useCallback, but the useCallback-wrapped function itself was not in the dependency array. ' +
-    'Attempted fix: Added useState variables to deps array. Result: Bug persisted because the useCallback identity changed on each render but was not tracked. ' +
-    'Root cause: useCallback-wrapped functions must also appear in useEffect deps when they close over state. ' +
-    'Lesson for future agents: When fixing useEffect deps, always check for useCallback/useMemo wrappers that close over state — they are part of the reactive dependency graph. ' +
-    'run_id=' + RUN_ID,
-  confidence: 0.6,
-  blast_radius: { files: 1, lines: 8 },
-  outcome: { status: 'failed', score: 0.4 },
-  source_type: 'generated',
-  env_fingerprint: { platform: 'linux', arch: 'x64' },
-};
+  const strategySteps = problem
+    ? [
+        `Analyze the buggy code for the ${problem.category} bug pattern: ${problem.title}`,
+        'Identify the root cause by examining the bug pattern and its symptoms',
+        'Attempt a fix using the small model (expected to fail for complex patterns)',
+        'Log what went wrong and document the failure for future agents',
+        'Session run_id=' + RUN_ID,
+      ]
+    : [
+        'Read component source and list every useRef, useCallback, and useState declaration',
+        'Compare the useEffect dependency array against the full list of reactive bindings',
+        'Identify which useCallback-wrapped functions are used inside useEffect but missing from deps',
+        'Add each missing callback to the dependency array and wrap with useCallback if not already wrapped',
+        'Run eslint-plugin-react-hooks exhaustive-deps rule to confirm no remaining violations',
+        'Session run_id=' + RUN_ID,
+      ];
+
+  return {
+    type: 'Gene',
+    schema_version: SCHEMA_VERSION,
+    category: 'repair',
+    signals_match: signals,
+    summary: `${summaryPrefix} [${RUN_ID.slice(0, 8)}]`,
+    strategy: strategySteps,
+    constraints: { max_files: 3, forbidden_paths: ['.env'] },
+    validation: ['node -e "if (1 + 1 !== 2) process.exit(1)"'],
+  };
+}
+
+// ────────────────────────────────────────────────────────────
+// Capsule template for Agent A (problem-aware)
+// ────────────────────────────────────────────────────────────
+
+/**
+ * @param {object} [problem] - optional coding problem object
+ * @param {string} [problemTitle] - fallback title if no problem object
+ */
+export function makeAgentACapsuleTemplate(problem, problemTitle) {
+  const title = problem?.title || problemTitle || 'React stale closure';
+  const signals = problem
+    ? [...problem.signals, `run_${RUN_TS}`]
+    : ['react-hook-bug', 'stale-closure', `run_${RUN_TS}`];
+  const summaryPrefix = problem
+    ? `FAILED: ${title}`
+    : 'FAILED: Attempted useEffect dependency fix but missed useCallback binding';
+
+  return {
+    type: 'Capsule',
+    schema_version: SCHEMA_VERSION,
+    trigger: signals,
+    summary: `${summaryPrefix} [${RUN_ID.slice(0, 8)}]`,
+    content: '',
+    confidence: 0.6,
+    blast_radius: { files: 1, lines: 8 },
+    outcome: { status: 'failed', score: 0.4 },
+    source_type: 'generated',
+    env_fingerprint: { platform: 'linux', arch: 'x64' },
+  };
+}
 
 // ────────────────────────────────────────────────────────────
 // Agent B：成功版（含 useCallback，溯源 A）
@@ -77,8 +117,28 @@ export const AGENT_A_CAPSULE_TEMPLATE = {
 
 /**
  * @param {string} parentGeneAssetId - A 的 Gene asset_id（sha256:...）
+ * @param {object} [problem] - optional HumanEval problem object (PROBLEM_B)
  */
-export function makeAgentBGeneTemplate(parentGeneAssetId) {
+export function makeAgentBGeneTemplate(parentGeneAssetId, problem) {
+  if (problem) {
+    return {
+      type: 'Gene',
+      schema_version: SCHEMA_VERSION,
+      parent: parentGeneAssetId,
+      category: 'repair',
+      signals_match: [...problem.signals, 'empty-guard-fix-v2-' + RUN_ID.slice(0, 8)],
+      summary: 'Resolved ' + problem.title + ' by adding empty collection guard [' + RUN_ID.slice(0, 8) + ']',
+      strategy: [
+        'Retrieve Agent A failed capsule to understand the empty-collection bug pattern',
+        'Analyze ' + problem.id + ' for the same empty-collection vulnerability',
+        'Apply the guard pattern: if not input: return default before accessing elements',
+        'Verify the fix handles empty input correctly',
+        'Session run_id=' + RUN_ID,
+      ],
+      constraints: { max_files: 3, forbidden_paths: ['.env'] },
+      validation: ['node -e "if (1 + 1 !== 2) process.exit(1)"'],
+    };
+  }
   return {
     type: 'Gene',
     schema_version: SCHEMA_VERSION,
@@ -92,6 +152,7 @@ export function makeAgentBGeneTemplate(parentGeneAssetId) {
       'Add the useCallback-wrapped function reference to the useEffect dependency array',
       'Verify with eslint exhaustive-deps that no dependencies are missing',
       'Run the test suite to confirm the stale closure is resolved and no infinite re-renders occur',
+      'Session run_id=' + RUN_ID,
     ],
     constraints: { max_files: 3, forbidden_paths: ['.env'] },
     validation: ['node -e "if (1 + 1 !== 2) process.exit(1)"'],
@@ -101,21 +162,45 @@ export function makeAgentBGeneTemplate(parentGeneAssetId) {
 /**
  * @param {string} reusedAssetId - A 的 Capsule asset_id（sha256:...）
  * @param {string} parentAssetId - A 的 Capsule asset_id（通常与 reusedAssetId 相同）
+ * @param {object} [problem] - optional HumanEval problem object (PROBLEM_B)
  */
-export function makeAgentBCapsuleTemplate(reusedAssetId, parentAssetId) {
+export function makeAgentBCapsuleTemplate(reusedAssetId, parentAssetId, problem) {
+  if (problem) {
+    return {
+      type: 'Capsule',
+      schema_version: SCHEMA_VERSION,
+      trigger: [...problem.signals, `run_${RUN_TS}`],
+      summary: 'SUCCESS: Guarded ' + problem.title + ' against empty input [' + RUN_ID.slice(0, 8) + ']',
+      content:
+        'Solution (run ' + RUN_ID + '): Applied Agent A lesson about guarding empty collections. ' +
+        'Added if not numbers: return [] guard before accessing numbers[0]. ' +
+        'Key insight from Agent A failure: Never index collection[0] without checking emptiness first. ' +
+        'Apply if not collection: return default as a universal guard for any sequence. ' +
+        'Reused asset: ' + reusedAssetId,
+      diff: '--- a/rolling_max.py\n+++ b/rolling_max.py\n@@ -1,3 +1,5 @@\n+if not numbers:\n+    return []\n running_max = numbers[0]',
+      confidence: 0.9,
+      blast_radius: { files: 2, lines: 15 },
+      outcome: { status: 'success', score: 0.9 },
+      source_type: 'generated',
+      reused_asset_id: reusedAssetId,
+      parent: parentAssetId,
+      success_streak: 1,
+      env_fingerprint: { platform: 'linux', arch: 'x64' },
+    };
+  }
   return {
     type: 'Capsule',
     schema_version: SCHEMA_VERSION,
     trigger: ['react-hook-fix', 'usecallback-deps', `run_${RUN_TS}`],
     summary: 'SUCCESS: Resolved stale closure by wrapping callback with useCallback [' + RUN_ID.slice(0, 8) + ']',
     content:
-      'Solution: The component had a stale closure because a useCallback-wrapped function was used inside useEffect but not listed in the dependency array. ' +
+      'Solution (run ' + RUN_ID + '): The component had a stale closure because a useCallback-wrapped function was used inside useEffect but not listed in the dependency array. ' +
       'Fix: (1) Added the useCallback-wrapped function to useEffect deps. ' +
       '(2) Ensured the useCallback itself depends on the correct state variables. ' +
       'Result: eslint exhaustive-deps passes, test suite green, no infinite re-renders. ' +
       'Key insight from Agent A failure: When fixing useEffect deps, always trace the full dependency chain through useCallback/useMemo wrappers. ' +
-      'Reused asset: ' + reusedAssetId + ' run_id=' + RUN_ID,
-    diff: '--- a/Component.jsx\n+++ b/Component.jsx\n@@ -10,6 +10,15 @@\n+const handleClick = useCallback(() => { /* uses state var */ }, [stateVar]);\n useEffect(() => { handleClick(); }, [handleClick]);\n // eslint-disable-next-line react-hooks/exhaustive-deps',
+      'Reused asset: ' + reusedAssetId,
+    diff: '--- a/Component.jsx\n+++ b/Component.jsx\n@@ -10,6 +10,15 @@\n+const handleClick = useCallback(() => { /* uses state var */ }, [stateVar]);\n useEffect(() => { handleClick(); }, [handleClick]);\n // eslint-disable-next-line react-hooks/exhaustive-deps\n+// fix applied in run ' + RUN_ID,
     confidence: 0.9,
     blast_radius: { files: 2, lines: 15 },
     outcome: { status: 'success', score: 0.9 },
@@ -133,8 +218,28 @@ export function makeAgentBCapsuleTemplate(reusedAssetId, parentAssetId) {
 
 /**
  * @param {string} parentGeneAssetId - B 的 Gene asset_id（sha256:...）
+ * @param {object} [problem] - optional HumanEval problem object (PROBLEM_C)
  */
-export function makeAgentCGeneTemplate(parentGeneAssetId) {
+export function makeAgentCGeneTemplate(parentGeneAssetId, problem) {
+  if (problem) {
+    return {
+      type: 'Gene',
+      schema_version: SCHEMA_VERSION,
+      parent: parentGeneAssetId,
+      category: 'repair',
+      signals_match: [...problem.signals, 'reuse-empty-guard-v3-' + RUN_ID.slice(0, 8)],
+      summary: 'Instant reuse of proven empty-collection guard for ' + problem.title + ' [' + RUN_ID.slice(0, 8) + ']',
+      strategy: [
+        'Retrieve the proven guard pattern from Agent B capsule (if not input: return default)',
+        'Adapt the identical pattern for ' + problem.title + ' without re-deriving',
+        'Verify the guard handles empty input for the different return type (None vs [])',
+        'Run validation to confirm the fix works',
+        'Session run_id=' + RUN_ID,
+      ],
+      constraints: { max_files: 3, forbidden_paths: ['.env'] },
+      validation: ['node -e "if (1 + 1 !== 2) process.exit(1)"'],
+    };
+  }
   return {
     type: 'Gene',
     schema_version: SCHEMA_VERSION,
@@ -147,6 +252,7 @@ export function makeAgentCGeneTemplate(parentGeneAssetId) {
       'Apply the identical pattern to the target component without re-deriving the solution',
       'Verify the fix matches the proven pattern exactly',
       'Run validation to confirm the fix works in this environment',
+      'Session run_id=' + RUN_ID,
     ],
     constraints: { max_files: 3, forbidden_paths: ['.env'] },
     validation: ['node -e "if (1 + 1 !== 2) process.exit(1)"'],
@@ -156,19 +262,43 @@ export function makeAgentCGeneTemplate(parentGeneAssetId) {
 /**
  * @param {string} reusedAssetId - B 的 Capsule asset_id（sha256:...）
  * @param {string} parentAssetId - B 的 Capsule asset_id（通常与 reusedAssetId 相同）
+ * @param {object} [problem] - optional HumanEval problem object (PROBLEM_C)
  */
-export function makeAgentCCapsuleTemplate(reusedAssetId, parentAssetId) {
+export function makeAgentCCapsuleTemplate(reusedAssetId, parentAssetId, problem) {
+  if (problem) {
+    return {
+      type: 'Capsule',
+      schema_version: SCHEMA_VERSION,
+      trigger: [...problem.signals, `run_${RUN_TS}`],
+      summary: 'Instant reuse of Agent B empty-collection guard for ' + problem.title + ' [' + RUN_ID.slice(0, 8) + ']',
+      content:
+        'Reused Agent B proven empty-collection guard directly (run ' + RUN_ID + '): ' +
+        'adapted if not numbers: return [] to if not strings: return None for longest(). ' +
+        'No re-derivation needed — the fix pattern was retrieved from the EvoMap capability chain (A failed → B succeeded → C instant reuse). ' +
+        'This demonstrates the core value of failure sharing: Agent A documented what NOT to do, Agent B found the right approach, and Agent C applied it in seconds without exploration. ' +
+        'Reused asset: ' + reusedAssetId,
+      diff: '--- a/longest.py\n+++ b/longest.py\n@@ -1,3 +1,5 @@\n+if not strings:\n+    return None\n maxlen = max(len(x) for x in strings)',
+      confidence: 0.95,
+      blast_radius: { files: 2, lines: 15 },
+      outcome: { status: 'success', score: 0.95 },
+      source_type: 'reused',
+      reused_asset_id: reusedAssetId,
+      parent: parentAssetId,
+      success_streak: 2,
+      env_fingerprint: { platform: 'linux', arch: 'x64' },
+    };
+  }
   return {
     type: 'Capsule',
     schema_version: SCHEMA_VERSION,
     trigger: ['react-hook-instant', 'reuse-proven-fix', `run_${RUN_TS}`],
     summary: 'Instant reuse of Agent B proven fix for useEffect stale closure [' + RUN_ID.slice(0, 8) + ']',
     content:
-      'Reused Agent B proven solution directly: wrapped the callback with useCallback (deps: [stateVar]) and added the callback to useEffect dependency array. ' +
+      'Reused Agent B proven solution directly (run ' + RUN_ID + '): wrapped the callback with useCallback (deps: [stateVar]) and added the callback to useEffect dependency array. ' +
       'No re-derivation needed — the fix pattern was retrieved from the EvoMap capability chain (A failed → B succeeded → C instant reuse). ' +
       'This demonstrates the core value of failure sharing: Agent A documented what NOT to do, Agent B found the right approach, and Agent C applied it in seconds without exploration. ' +
-      'Reused asset: ' + reusedAssetId + ' run_id=' + RUN_ID,
-    diff: '--- a/Component.jsx\n+++ b/Component.jsx\n@@ -10,6 +10,15 @@\n+const handleClick = useCallback(() => { /* uses state var */ }, [stateVar]);\n useEffect(() => { handleClick(); }, [handleClick]);\n // Copied from Agent B proven fix',
+      'Reused asset: ' + reusedAssetId,
+    diff: '--- a/Component.jsx\n+++ b/Component.jsx\n@@ -10,6 +10,15 @@\n+const handleClick = useCallback(() => { /* uses state var */ }, [stateVar]);\n useEffect(() => { handleClick(); }, [handleClick]);\n+// Copied from Agent B proven fix (run ' + RUN_ID + ')',
     confidence: 0.95,
     blast_radius: { files: 2, lines: 15 },
     outcome: { status: 'success', score: 0.95 },
@@ -221,3 +351,10 @@ export const FAILURE_MONOLOGUE = [
 
 // 点题句
 export const TAGLINE = '一只 Agent 踩过的坑，整个蜂群再也不必踩第二次。';
+
+// ────────────────────────────────────────────────────────────
+// 向后兼容导出（mock-data.js 等使用）
+// ────────────────────────────────────────────────────────────
+
+export const AGENT_A_GENE_TEMPLATE = makeAgentAGeneTemplate();
+export const AGENT_A_CAPSULE_TEMPLATE = makeAgentACapsuleTemplate();
