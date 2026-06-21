@@ -164,4 +164,9 @@ async function main() {
 }
 
 const isMain = process.argv[1] && process.argv[1].endsWith('agent-b.js');
-if (isMain) main().catch((err) => { console.error(err.message); process.exit(1); });
+if (isMain) {
+  main().catch((err) => {
+    console.error('[Agent B] 致命错误:', err.message);
+    process.exit(1);
+  });
+}

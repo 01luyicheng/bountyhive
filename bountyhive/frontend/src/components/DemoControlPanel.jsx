@@ -16,17 +16,6 @@ const AGENT_COLOR = {
   system: 'text-ink-muted',
 }
 
-function formatTime(ts) {
-  if (!ts) return '—'
-  try {
-    const d = typeof ts === 'number' ? new Date(ts) : new Date(ts)
-    if (isNaN(d.getTime())) return String(ts)
-    return d.toLocaleTimeString('zh-CN', { hour12: false })
-  } catch {
-    return String(ts)
-  }
-}
-
 function formatLogTime(ts) {
   if (!ts) return '--:--:--'
   try {
@@ -38,54 +27,29 @@ function formatLogTime(ts) {
   }
 }
 
-/**
- * Demo 控制面板：启动按钮 + 状态 + 实时日志（SSE）。
- */
 export default function DemoControlPanel() {
   const { status, error: statusError } = useDemoStatus()
-  const { logs, connected, clear: clearLogs } = useDemoLogs()
-  const [starting, setStarting] = useState(false)
-  const [startError, setStartError] = useState(null)
+  const { logs, connected } = useDemoLogs()
   const logEndRef = useRef(null)
 
   const phase = status?.phase || 'idle'
   const phaseMeta = PHASE_META[phase] || PHASE_META.idle
   const isRunning = phase === 'running'
 
-  // 自动滚动到底部
+  useEffect(() => {
+    if (status?.phase === 'idle') {
+      const timer = setTimeout(() => {
+        fetch('/api/demo/start', { method: 'POST' }).catch(() => {})
+      }, 2000)
+      return () => clearTimeout(timer)
+    }
+  }, [status?.phase])
+
   useEffect(() => {
     if (logEndRef.current) {
       logEndRef.current.scrollIntoView({ behavior: 'smooth', block: 'end' })
     }
   }, [logs])
-
-  const handleStart = async () => {
-    setStarting(true)
-    setStartError(null)
-    clearLogs()
-    try {
-      const res = await fetch('/api/demo/start', { method: 'POST' })
-      if (!res.ok) throw new Error(`HTTP ${res.status}`)
-    } catch (e) {
-      setStartError(e.message || 'failed to start demo')
-    } finally {
-      setStarting(false)
-    }
-  }
-
-  const handleReset = async () => {
-    try {
-      const res = await fetch('/api/demo/reset', { method: 'POST' })
-      clearLogs()
-      setStartError(null)
-      if (!res.ok) {
-        setStartError('重置请求已发送')
-      }
-    } catch {
-      setStartError('重置请求已发送')
-      clearLogs()
-    }
-  }
 
   const completedSteps = status?.completed_steps || []
   const elapsed = status?.started_at
@@ -96,7 +60,7 @@ export default function DemoControlPanel() {
     <section className="panel">
       <div className="panel-header">
         <div className="flex items-center gap-3">
-          <span className="panel-title">// 01 · Demo 控制台</span>
+          <span className="panel-title">// System Status</span>
           <span className={`tag ${phaseMeta.tag} ${isRunning ? 'animate-pulse' : ''}`}>
             {phaseMeta.label}
           </span>
@@ -110,59 +74,33 @@ export default function DemoControlPanel() {
       </div>
 
       <div className="panel-body space-y-3">
-        {/* 控制按钮 + 状态摘要 */}
-        <div className="grid grid-cols-1 lg:grid-cols-[200px_1fr] gap-3">
-          <div className="space-y-2">
-            <button
-              onClick={handleStart}
-              disabled={starting || isRunning}
-              className="btn-primary w-full"
-            >
-              {starting ? '◉ 启动中...' : isRunning ? '◉ 运行中' : '▶ 启动 Demo'}
-            </button>
-            <button
-              onClick={handleReset}
-              disabled={isRunning}
-              className="btn-ghost w-full"
-            >
-              ↻ 重置
-            </button>
-            {startError && (
-              <div className="text-[10px] font-mono text-neon-red/80 break-all">
-                ⚠ {startError}
-              </div>
-            )}
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-2">
+          <div className="panel bg-void-deep/60 p-2.5">
+            <div className="text-[9px] font-mono uppercase tracking-wider text-ink-dim">phase</div>
+            <div className={`font-display text-sm font-bold text-${phaseMeta.color} text-glow-cyan`}>
+              {phaseMeta.label}
+            </div>
           </div>
-
-          <div className="grid grid-cols-2 lg:grid-cols-4 gap-2">
-            <div className="panel bg-void-deep/60 p-2.5">
-              <div className="text-[9px] font-mono uppercase tracking-wider text-ink-dim">phase</div>
-              <div className={`font-display text-sm font-bold text-${phaseMeta.color} text-glow-cyan`}>
-                {phaseMeta.label}
-              </div>
+          <div className="panel bg-void-deep/60 p-2.5">
+            <div className="text-[9px] font-mono uppercase tracking-wider text-ink-dim">elapsed</div>
+            <div className="font-display text-sm font-bold text-neon-amber">
+              {elapsed}s
             </div>
-            <div className="panel bg-void-deep/60 p-2.5">
-              <div className="text-[9px] font-mono uppercase tracking-wider text-ink-dim">elapsed</div>
-              <div className="font-display text-sm font-bold text-neon-amber">
-                {elapsed}s
-              </div>
+          </div>
+          <div className="panel bg-void-deep/60 p-2.5">
+            <div className="text-[9px] font-mono uppercase tracking-wider text-ink-dim">steps</div>
+            <div className="font-display text-sm font-bold text-neon-cyan">
+              {completedSteps.length}
             </div>
-            <div className="panel bg-void-deep/60 p-2.5">
-              <div className="text-[9px] font-mono uppercase tracking-wider text-ink-dim">steps</div>
-              <div className="font-display text-sm font-bold text-neon-cyan">
-                {completedSteps.length}
-              </div>
-            </div>
-            <div className="panel bg-void-deep/60 p-2.5">
-              <div className="text-[9px] font-mono uppercase tracking-wider text-ink-dim">run_id</div>
-              <div className="font-mono text-[10px] text-ink-muted truncate" title={status?.run_id}>
-                {status?.run_id ? String(status.run_id).slice(0, 8) : '—'}
-              </div>
+          </div>
+          <div className="panel bg-void-deep/60 p-2.5">
+            <div className="text-[9px] font-mono uppercase tracking-wider text-ink-dim">run_id</div>
+            <div className="font-mono text-[10px] text-ink-muted truncate" title={status?.run_id}>
+              {status?.run_id ? String(status.run_id).slice(0, 8) : '—'}
             </div>
           </div>
         </div>
 
-        {/* 已完成步骤 */}
         {completedSteps.length > 0 && (
           <div className="panel bg-void-deep/60 p-2.5">
             <div className="text-[9px] font-mono uppercase tracking-wider text-ink-dim mb-1.5">
@@ -178,11 +116,10 @@ export default function DemoControlPanel() {
           </div>
         )}
 
-        {/* 实时日志 */}
         <div className="panel bg-void-deep/80 overflow-hidden">
           <div className="flex items-center justify-between px-3 py-2 border-b border-void-border">
             <span className="text-[10px] font-mono uppercase tracking-wider text-ink-dim">
-              demo_logs · live stream
+              Live Events
             </span>
             <span className="text-[10px] font-mono text-ink-dim">
               {logs.length} lines
@@ -194,7 +131,7 @@ export default function DemoControlPanel() {
             {logs.length === 0 ? (
               <div className="h-full flex items-center justify-center text-ink-dim">
                 <span className="animate-pulse">
-                  {statusError ? '⚠ 状态信号丢失' : '等待 Demo 启动 · 日志将在此实时滚动...'}
+                  {statusError ? '⚠ Status signal lost' : 'Waiting for events...'}
                 </span>
               </div>
             ) : (

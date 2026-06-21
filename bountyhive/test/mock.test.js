@@ -346,9 +346,9 @@ describe('Mock Orchestrator - 阶段推进', () => {
       assert.ok(log.msg, '日志应有 msg');
     }
 
-    // 应包含失败独白相关日志
-    const hasMonologue = logSink.some((l) => l.msg.includes('失败独白'));
-    assert.ok(hasMonologue, '应包含失败独白日志');
+    // 应包含 Agent A capsule 发布日志
+    const hasFailedCapsule = logSink.some((l) => l.msg.includes('failed Capsule'));
+    assert.ok(hasFailedCapsule, '应包含 failed Capsule 日志');
 
     // 应包含点题句相关日志
     const hasTagline = logSink.some((l) => l.msg.includes('点题'));

@@ -28,6 +28,7 @@ export const PROBLEM_A = {
     result.append(numbers[-1])
     return result`,
   validation: 'numbers[-1] crashes on empty list because numbers[:-1] silently returns [] on empty lists',
+  guardCheck: (fixCode) => fixCode.includes('if not numbers') && !fixCode.includes('numbers[-1]'),
   signals: ['empty-collection-guard', 'index-error', 'python-list-slice', 'intersperse'],
   category: 'edge-case',
   difficulty: 'easy',
@@ -55,6 +56,7 @@ export const PROBLEM_B = {
         result.append(running_max)
     return result`,
   validation: 'numbers[0] crashes on empty list — missing empty collection guard',
+  guardCheck: (fixCode) => fixCode.includes('if not numbers'),
   signals: ['empty-collection-guard', 'index-error', 'python-max', 'rolling-max'],
   category: 'edge-case',
   difficulty: 'easy',
@@ -78,6 +80,7 @@ export const PROBLEM_C = {
         if len(s) == maxlen:
             return s`,
   validation: 'max() on empty iterator raises ValueError — missing empty collection guard',
+  guardCheck: (fixCode) => fixCode.includes('if not strings'),
   signals: ['empty-collection-guard', 'value-error', 'python-max', 'longest'],
   category: 'edge-case',
   difficulty: 'easy',

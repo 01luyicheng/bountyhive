@@ -38,7 +38,11 @@ export async function callLLM(model, prompt, opts = {}) {
   }
 
   const data = await res.json();
-  return data.choices?.[0]?.message?.content || '';
+  const content = data.choices?.[0]?.message?.content;
+  if (!content) {
+    throw new Error(`OpenRouter 返回空内容 (choices=${data.choices?.length ?? 0})`);
+  }
+  return content;
 }
 
 /**

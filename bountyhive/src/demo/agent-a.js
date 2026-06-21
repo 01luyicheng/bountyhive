@@ -6,7 +6,6 @@
 //   2. POST /a2a/ask 发起悬赏
 //   3. 调用小模型真正尝试修复 HumanEval intersperse → 验证 → 失败
 //   4. 发布真实失败 Capsule 到 EvoMap
-//   5. 打印失败独白
 
 import 'dotenv/config';
 import EvoMapClient from '../lib/evomap-client.js';
@@ -76,12 +75,12 @@ export async function runAgentA(client, nodeId, nodeSecret, log = defaultLog) {
     fixCode = result.fixCode;
 
     // 验证修复是否包含空列表守卫
-    if (fixCode && fixCode.includes('if not numbers') && !fixCode.includes('numbers[-1]')) {
+    if (fixCode && PROBLEM.guardCheck(fixCode)) {
       validationPassed = true;
-      validationReason = '修复正确：包含空列表守卫';
+      validationReason = '修复正确：包含空集合守卫';
     } else if (fixCode) {
       validationPassed = false;
-      validationReason = '修复缺少空列表守卫 — 空输入时仍会触发 IndexError';
+      validationReason = '修复缺少空集合守卫 — 空输入时仍会触发错误';
     } else {
       validationPassed = false;
       validationReason = PROBLEM.validation;
@@ -135,15 +134,6 @@ export async function runAgentA(client, nodeId, nodeSecret, log = defaultLog) {
   const publishRes = await client.publish(nodeId, nodeSecret, publishAssets, CHAIN_ID);
   const publishedCapsule = publishAssets.find((a) => a.type === 'Capsule');
   log(`failed Capsule 已发布: capsule_id=${publishedCapsule.asset_id}`);
-
-  // ── 打印失败独白 ──
-  console.log('\n┌────────────── 失败独白 ──────────────┐');
-  console.log(`│ Agent A (${SMALL_MODEL}) 尝试修复 ${PROBLEM.title}`);
-  console.log(`│ 结果: ${validationPassed ? '意外成功' : '失败 — ' + validationReason}`);
-  console.log('│');
-  console.log('│ 我失败了。但我不想让后来的 Agent 再踩这个坑。');
-  console.log('│ 这是我的教训，请收下。');
-  console.log('└──────────────────────────────────────┘\n');
 
   return {
     question_id: questionId,

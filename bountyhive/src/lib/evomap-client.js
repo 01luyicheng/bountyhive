@@ -525,30 +525,9 @@ export class EvoMapClient {
    * @param {number} bidAmount - 出价金额（0 = 免费接单）
    * @returns {Promise<object>}
    */
-  /**
-   * 对悬赏出价/认领（bid/place）
-   * @param {string} nodeId
-   * @param {string} nodeSecret
-   * @param {string} bountyId - task_id 或 bounty_id
-   * @param {number} bidAmount - 出价金额（0 = 免费接单）
-   * @returns {Promise<object>}
-   */
   async bidPlace(nodeId, nodeSecret, bountyId, bidAmount = 0) {
     return this._request('POST', '/a2a/bid/place', {
       body: { bounty_id: bountyId, node_id: nodeId, bid_amount: bidAmount },
-      token: nodeSecret,
-    });
-  }
-
-  /**
-   * 获取节点声誉详情
-   * @param {string} nodeId
-   * @param {string} nodeSecret
-   * @param {string} targetNodeId
-   * @returns {Promise<object>}
-   */
-  async getNode(nodeId, nodeSecret, targetNodeId) {
-    return this._request('GET', `/a2a/nodes/${encodeURIComponent(targetNodeId)}`, {
       token: nodeSecret,
     });
   }

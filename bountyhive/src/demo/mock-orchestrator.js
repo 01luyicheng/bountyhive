@@ -6,11 +6,10 @@
 //   1. 不调用 EvoMap Hub，所有数据来自 mock-data.js
 //   2. 每阶段用 await sleep(ms) 模拟真实 API 调用耗时（2-3 秒/阶段，总时长约 20 秒）
 //   3. 日志格式与真实 orchestrator 一致（前端无需感知差异）
-//   4. 失败独白 + 点题句从 agent-templates.js 导入，保证文案一致
 //
 // 阶段序列（9 个阶段）：
 //   1. agent-a-hello        (2s) 加载 A 凭证
-//   2. agent-a-ask-publish  (3s) A 发起悬赏 + 发布 failed Capsule + 失败独白
+//   2. agent-a-ask-publish  (3s) A 发起悬赏 + 发布 failed Capsule
 //   3. agent-b-hello        (2s) 加载 B 凭证
 //   4. agent-b-claim-solve  (4s) B 认领 + 搜失败经验 + 发布成功 Capsule + task/complete
 //   5. agent-a-accept       (2s) A 选优胜
@@ -21,7 +20,6 @@
 
 import {
   CHAIN_ID,
-  FAILURE_MONOLOGUE,
   TAGLINE,
 } from './agent-templates.js';
 import {
@@ -32,7 +30,7 @@ import {
   getMockChain,
   getMockEarnings,
 } from '../lib/mock-data.js';
-import { STORY_MODE, SKIP_SEARCH, storyAct1, storyAct2, storyAct3, storyAct4, storyAct5, storyFinale, makeStoryLogger } from './story-printer.js';
+import { SKIP_SEARCH } from './story-printer.js';
 
 function ts() {
   return new Date().toISOString();
@@ -61,8 +59,8 @@ function makeLogger(sink, onLog) {
  * @returns {Promise<object>} 完整结果（结构同真实 orchestrator）
  */
 export async function runMockOrchestrator(options = {}) {
-  const { logSink = [], onPhase = () => {}, onLog = null, storyMode = false, skipSearch = false } = options;
-  const log = storyMode ? makeStoryLogger(logSink, onLog) : makeLogger(logSink, onLog);
+  const { logSink = [], onPhase = () => {}, onLog = null, skipSearch = false } = options;
+  const log = makeLogger(logSink, onLog);
   const realSleep = skipSearch ? () => Promise.resolve() : sleep;
 
   const result = {
@@ -86,7 +84,7 @@ export async function runMockOrchestrator(options = {}) {
   function setPhase(p) {
     result.phase = p;
     onPhase(p);
-    log(`━━━━━━━━━━ 阶段: ${p} ━━━━━━━━━━`, 'phase');
+    log(`阶段: ${p}`, 'phase');
   }
 
   try {
@@ -109,9 +107,6 @@ export async function runMockOrchestrator(options = {}) {
     log('发布 failed Capsule: capsule_lesson_burned_001');
     log(`failed Capsule 已发布: capsule_id=${MOCK_ASSETS.capsules.a.asset_id}`);
 
-    // 失败独白（与真实 orchestrator 一致）
-    if (!storyMode) log(`失败独白:\n${FAILURE_MONOLOGUE}`);
-
     result.a = {
       task_id: MOCK_TASK_ID,
       gene_id: MOCK_ASSETS.genes.a.asset_id,
@@ -122,7 +117,6 @@ export async function runMockOrchestrator(options = {}) {
     };
     result.completed_steps.push('agent-a');
     result.stepTimings.push({ step: 'agent-a', duration_ms: Date.now() - stepStart });
-    if (storyMode) storyAct1(result.a);
 
     // ──────────────────────────────────────────────────────────
     // 阶段 3-4：Agent B 凭证 + 认领 + 搜失败经验 + 发布成功 Capsule
@@ -163,7 +157,6 @@ export async function runMockOrchestrator(options = {}) {
     };
     result.completed_steps.push('agent-b');
     result.stepTimings.push({ step: 'agent-b', duration_ms: Date.now() - stepStart });
-    if (storyMode) storyAct2();
 
     // ──────────────────────────────────────────────────────────
     // 阶段 5：Agent A 选优胜
@@ -216,7 +209,6 @@ export async function runMockOrchestrator(options = {}) {
     };
     result.completed_steps.push('agent-c');
     result.stepTimings.push({ step: 'agent-c', duration_ms: Date.now() - stepStart });
-    if (storyMode) storyAct3();
 
     // ──────────────────────────────────────────────────────────
     // 阶段 8：查询能力链 + A 的积分流水
@@ -228,7 +220,6 @@ export async function runMockOrchestrator(options = {}) {
     const chainResult = getMockChain(CHAIN_ID);
     result.chain = { ...chainResult, mock: true };
     log(`能力链查询完成，共 ${chainResult.assets.length} 个资产（A→B→C）`);
-    if (storyMode) storyAct4(result.chain);
 
     await realSleep(500);
     log(`查询 A 的积分流水: GET /billing/earnings/${MOCK_NODE_IDS.a}`);
@@ -241,7 +232,6 @@ export async function runMockOrchestrator(options = {}) {
       mock: true,
     };
     log('积分流水查询完成');
-    if (storyMode) storyAct5(result.earnings);
 
     result.completed_steps.push('chain-earnings');
     result.stepTimings.push({ step: 'chain-earnings', duration_ms: Date.now() - stepStart });
@@ -263,20 +253,16 @@ export async function runMockOrchestrator(options = {}) {
 
     setPhase('done');
     await realSleep(1000);
-    if (storyMode) {
-      storyFinale(TAGLINE, totalMs, result.simulated_savings);
-    } else {
-      log('━━━━━━━━━━ Demo 完成 ━━━━━━━━━━', 'phase');
-      log(`点题: ${TAGLINE}`, 'phase');
-      log(`⏱ 总耗时: ${totalMs}ms (${(totalMs / 1000).toFixed(1)}s)`, 'phase');
-      for (const t of result.stepTimings) {
-        log(`  ├ ${t.step}: ${t.duration_ms}ms (${(t.duration_ms / 1000).toFixed(1)}s)`, 'phase');
-      }
-      log('━━━━━━━ 失败共享节省（SIMULATED）━━━━━━━', 'phase');
-      log(`  无共享: A(180s) + B(180s) + C(180s) = 540s（各 agent 独立探索）`, 'phase');
-      log(`  有共享: A(180s) + B(120s) + C(5s) = 305s（B 先搜, C 复用秒级修复）`, 'phase');
-      log(`  节省: 235s (43%)`, 'phase');
+    log('Demo 完成', 'phase');
+    log(`点题: ${TAGLINE}`, 'phase');
+    log(`总耗时: ${totalMs}ms (${(totalMs / 1000).toFixed(1)}s)`, 'phase');
+    for (const t of result.stepTimings) {
+      log(`  ├ ${t.step}: ${t.duration_ms}ms (${(t.duration_ms / 1000).toFixed(1)}s)`, 'phase');
     }
+    log('失败共享节省（SIMULATED）', 'phase');
+    log(`  无共享: A(180s) + B(180s) + C(180s) = 540s（各 agent 独立探索）`, 'phase');
+    log(`  有共享: A(180s) + B(120s) + C(5s) = 305s（B 先搜, C 复用秒级修复）`, 'phase');
+    log(`  节省: 235s (43%)`, 'phase');
 
     result.completed_at = ts();
     return result;
@@ -294,10 +280,7 @@ export async function runMockOrchestrator(options = {}) {
 
 // ── 独立运行入口 ──
 async function main() {
-  console.log('┌────────────────────────────────────────────┐');
-  console.log('│  BountyHive Mock Demo 编排启动             │');
-  console.log('│  方案 E：悬赏市场蜂群接单进化体（Mock）    │');
-  console.log('└────────────────────────────────────────────┘');
+  console.log('BountyHive Mock Demo 编排启动');
   try {
     const result = await runMockOrchestrator();
     console.log('\n=== Mock Demo 最终结果 ===');
