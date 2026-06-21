@@ -389,6 +389,16 @@ export class EvoMapClient {
   }
 
   /**
+   * 对 bounty 出价
+   */
+  async bidPlace(nodeId, nodeSecret, bountyId, amount, message) {
+    return this._request('POST', '/a2a/bid/place', {
+      body: { bounty_id: bountyId, sender_id: nodeId, amount, message },
+      token: nodeSecret,
+    });
+  }
+
+  /**
    * 获取节点声誉详情
    * @param {string} nodeId
    * @param {string} nodeSecret

@@ -41,35 +41,34 @@ export async function loadAgentCCreds(client, log = defaultLog) {
  * @param {Function} log
  */
 async function findSuccessCapsule(client, nodeId, nodeSecret, bCapsuleId, log, signal) {
-  log('semantic-search 搜成功经验: q=useEffect dependency, outcome=success');
+  log('semantic-search 搜成功经验: q=useEffect');
   for (let attempt = 1; attempt <= 5; attempt++) {
-    if (signal?.aborted) {
-      throw new Error('search cancelled');
-    }
-    const res = await client.semanticSearch(
-      nodeId,
-      nodeSecret,
-      'useEffect dependency useCallback',
-      { outcome: 'success', limit: 20, include_context: true }
-    );
-    const items = res?.results || res?.assets || res?.items || [];
-    if (items.length > 0) {
-      log(`搜到 ${items.length} 条成功 Capsule`);
-      const exact = items.find((it) => it.asset_id === bCapsuleId);
-      if (exact) {
-        log(`精确匹配到 B 的 Capsule: ${bCapsuleId}`);
-        return exact;
+    if (signal?.aborted) throw new Error('search cancelled');
+    try {
+      const res = await client.semanticSearch(
+        nodeId, nodeSecret, 'useEffect',
+        { limit: 20, include_context: true }
+      );
+      const items = res?.results || res?.assets || res?.items || [];
+      if (items.length > 0) {
+        log(`搜到 ${items.length} 条资产`);
+        const exact = items.find((it) => it.asset_id === bCapsuleId);
+        if (exact) { log(`精确匹配到 B 的 Capsule: ${bCapsuleId}`); return exact; }
+        log(`未精确匹配到 B 的 Capsule，取第一条: ${items[0].asset_id || items[0].id}`);
+        return items[0];
       }
-      log(`未精确匹配，取第一条: ${items[0].asset_id || items[0].id}`);
-      return items[0];
+      log(`第 ${attempt} 次搜索无结果，等待 10 秒后重试...`);
+    } catch (err) {
+      if (err.status >= 500) {
+        log(`第 ${attempt} 次搜索 5xx 错误（${err.status}），等待重试...`);
+      } else {
+        log(`第 ${attempt} 次搜索失败（${err.message}），等待重试...`);
+      }
     }
-    log(`第 ${attempt} 次搜索无结果，等待 10 秒后重试（semantic-search 30s 缓存延迟）...`);
     await new Promise((r) => setTimeout(r, 10000));
   }
-  throw new Error(
-    `[Agent C] semantic-search 5 次重试后仍未搜到 B 的 success Capsule\n` +
-      `下一步建议: 1) 确认 B 已 publish 成功 2) 改用 GET /a2a/assets?status=promoted`
-  );
+  log(`⚠️ semantic-search 5 次重试后仍未搜到，直接使用 b_capsule_id=${bCapsuleId}`, 'warn');
+  return { asset_id: bCapsuleId };
 }
 
 /**
@@ -94,13 +93,11 @@ export async function runAgentC(client, nodeId, nodeSecret, context, log = defau
   // 也搜一下 A 的失败经验（展示用，方案 E 第二节"高潮"）
   try {
     const failedRes = await client.semanticSearch(
-      nodeId,
-      nodeSecret,
-      'useEffect dependency',
-      { outcome: 'failed', limit: 5 }
+      nodeId, nodeSecret, 'useEffect',
+      { limit: 5 }
     );
     const failedItems = failedRes?.results || failedRes?.assets || failedRes?.items || [];
-    log(`同时搜到 ${failedItems.length} 条失败经验（A 的教训）`);
+    log(`同时搜到 ${failedItems.length} 条相关资产`);
   } catch (err) {
     log(`搜失败经验时出错（非致命）: ${err.message}`);
   }

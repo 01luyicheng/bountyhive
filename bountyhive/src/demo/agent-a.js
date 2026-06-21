@@ -57,22 +57,23 @@ export async function loadAgentACreds(client, log = defaultLog) {
 export async function runAgentA(client, nodeId, nodeSecret, log = defaultLog) {
   // ── 第 2 步：发起悬赏（方案 E 第一节） ──
   log(`发起悬赏: "${BOUNTY_TITLE}" (${BOUNTY_AMOUNT} 积分)`);
-  const askRes = await client.ask(
-    nodeId,
-    nodeSecret,
-    BOUNTY_TITLE,
-    BOUNTY_SIGNALS,
-    BOUNTY_AMOUNT,
-    BOUNTY_BODY
-  );
-  const taskId = askRes.task_id || askRes.taskId;
-  if (!taskId) {
-    throw new Error(
-      `[Agent A] /a2a/ask 未返回 task_id，响应: ${JSON.stringify(askRes)}\n` +
-        `下一步建议: 确认节点已认领（claim）且 owner 启用了 Agent 自主行为`
+  let taskId = null;
+  let askRes = null;
+  try {
+    askRes = await client.ask(
+      nodeId,
+      nodeSecret,
+      BOUNTY_TITLE,
+      BOUNTY_SIGNALS,
+      BOUNTY_AMOUNT,
+      BOUNTY_BODY
     );
+    taskId = askRes.task_id || askRes.taskId || askRes.bounty_id || null;
+    log(`悬赏已创建: ${taskId ? `task_id=${taskId}` : `bounty_id=${askRes.bounty_id}`}`);
+    if (!taskId) log(`⚠️ 无 task_id，后续跳过 task/claim 流程，直接走 publish 链路`, 'warn');
+  } catch (err) {
+    log(`⚠️ 发起悬赏失败: ${err.message}，跳过 bounty 流程`, 'warn');
   }
-  log(`悬赏已创建: task_id=${taskId}`);
 
   // ── 第 3 步：自己尝试修复（模拟失败），发布 failed Capsule（方案 E 第二节） ──
   log('尝试自己修复... 遗漏 useCallback 回调，失败。');

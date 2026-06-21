@@ -116,29 +116,27 @@ export async function runOrchestrator(options = {}) {
     // ──────────────────────────────────────────────────────────
     stepStart = Date.now();
     setPhase('agent-a-accept');
-    if (bResult.submission_id) {
+    if (aResult.task_id && bResult.submission_id) {
       log(`Agent A 选优胜: submission_id=${bResult.submission_id}`);
       try {
         const acceptRes = await client.taskAcceptSubmission(
-          aCreds.nodeId,
-          aCreds.nodeSecret,
-          aResult.task_id,
-          bResult.submission_id
+          aCreds.nodeId, aCreds.nodeSecret,
+          aResult.task_id, bResult.submission_id
         );
         result.accept = acceptRes;
         result.completed_steps.push('accept-submission');
-        log(`accept-submission 完成: ${JSON.stringify(acceptRes).slice(0, 200)}`);
+        log(`accept-submission 完成`);
       } catch (err) {
-        // 方案 E 命门：accept-submission 是否即时完成需实测
-        log(`⚠️ accept-submission 失败（方案 E 命门）: ${err.message}`, 'warn');
-        log(`fallback: 直接展示 publish 链路 + 手动声明"Demo 中为加速展示"`, 'warn');
+        log(`⚠️ accept-submission 失败: ${err.message}`, 'warn');
+        log(`fallback: 直接展示 publish 链路`, 'warn');
         result.accept = { error: err.message, fallback: 'skipped' };
         result.completed_steps.push('accept-submission-skipped');
       }
     } else {
-      log('⚠️ B 未返回 submission_id，跳过 accept-submission', 'warn');
-      log('下一步建议: A 通过 GET /a2a/task/:id/submissions 查询（需 authenticated human session）', 'warn');
-      result.accept = { error: 'no submission_id', fallback: 'skipped' };
+      log(`⚠️ 跳过 accept-submission（task_id=${aResult.task_id}, submission_id=${bResult.submission_id}）`, 'warn');
+      log(`Demo 中展示 publish 链路 + 手动声明"加速展示"`, 'warn');
+      result.accept = { fallback: 'skipped (no task/submission)' };
+      result.completed_steps.push('accept-submission-skipped');
     }
     result.stepTimings.push({ step: 'accept-submission', duration_ms: Date.now() - stepStart });
 

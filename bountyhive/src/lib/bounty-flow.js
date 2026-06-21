@@ -163,6 +163,12 @@ export async function tryPublishWithFallback(client, nodeId, nodeSecret, assets,
       errText
     );
 
+  // duplicate_asset：该资产已存在，跳过 validation 直接 publish（publish 端幂等）
+  if (validateRes?.reason === 'duplicate_asset') {
+    log(`检测到 duplicate_asset (${validateRes.target_asset_id})，跳过预检直接发布`);
+    return assets;
+  }
+
   if (!looksLikeUnknownField) {
     throw new Error(`[bounty-flow] /a2a/validate 预检失败: ${errText}`);
   }
