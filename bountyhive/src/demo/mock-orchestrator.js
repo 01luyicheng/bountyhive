@@ -32,6 +32,7 @@ import {
   getMockChain,
   getMockEarnings,
 } from '../lib/mock-data.js';
+import { STORY_MODE, SKIP_SEARCH, storyAct1, storyAct2, storyAct3, storyAct4, storyAct5, storyFinale, makeStoryLogger } from './story-printer.js';
 
 function ts() {
   return new Date().toISOString();
@@ -60,8 +61,9 @@ function makeLogger(sink, onLog) {
  * @returns {Promise<object>} 完整结果（结构同真实 orchestrator）
  */
 export async function runMockOrchestrator(options = {}) {
-  const { logSink = [], onPhase = () => {}, onLog = null } = options;
-  const log = makeLogger(logSink, onLog);
+  const { logSink = [], onPhase = () => {}, onLog = null, storyMode = false, skipSearch = false } = options;
+  const log = storyMode ? makeStoryLogger(logSink, onLog) : makeLogger(logSink, onLog);
+  const realSleep = skipSearch ? () => Promise.resolve() : sleep;
 
   const result = {
     started_at: ts(),
@@ -89,29 +91,26 @@ export async function runMockOrchestrator(options = {}) {
 
   try {
     // ──────────────────────────────────────────────────────────
-    // 阶段 1：Agent A 加载凭证
+    // 阶段 1-2：Agent A 凭证 + 发起悬赏 + 发布 failed Capsule
     // ──────────────────────────────────────────────────────────
     let stepStart = Date.now();
     setPhase('agent-a-hello');
     log('加载 Agent A 凭证...');
-    await sleep(2000);
+    await realSleep(2000);
     log(`[mock] node_id=${MOCK_NODE_IDS.a}`);
     result.a_creds = { node_id: MOCK_NODE_IDS.a, claim_url: null };
 
-    // ──────────────────────────────────────────────────────────
-    // 阶段 2：Agent A 发起悬赏 + 发布 failed Capsule
-    // ──────────────────────────────────────────────────────────
     setPhase('agent-a-ask-publish');
     log('Agent A 发起悬赏 + 发布 failed Capsule...');
-    await sleep(1500);
+    await realSleep(1500);
     log(`发起悬赏: Fix React useEffect dependency missing (50 积分)`);
     log(`悬赏已创建: task_id=${MOCK_TASK_ID}`);
-    await sleep(1500);
+    await realSleep(1500);
     log('发布 failed Capsule: capsule_lesson_burned_001');
     log(`failed Capsule 已发布: capsule_id=${MOCK_ASSETS.capsules.a.asset_id}`);
 
     // 失败独白（与真实 orchestrator 一致）
-    log(`失败独白:\n${FAILURE_MONOLOGUE}`);
+    if (!storyMode) log(`失败独白:\n${FAILURE_MONOLOGUE}`);
 
     result.a = {
       task_id: MOCK_TASK_ID,
@@ -123,34 +122,32 @@ export async function runMockOrchestrator(options = {}) {
     };
     result.completed_steps.push('agent-a');
     result.stepTimings.push({ step: 'agent-a', duration_ms: Date.now() - stepStart });
+    if (storyMode) storyAct1(result.a);
 
     // ──────────────────────────────────────────────────────────
-    // 阶段 3：Agent B 加载凭证
+    // 阶段 3-4：Agent B 凭证 + 认领 + 搜失败经验 + 发布成功 Capsule
     // ──────────────────────────────────────────────────────────
     stepStart = Date.now();
     setPhase('agent-b-hello');
     log('加载 Agent B 凭证...');
-    await sleep(2000);
+    await realSleep(2000);
     log(`[mock] node_id=${MOCK_NODE_IDS.b}`);
     result.b_creds = { node_id: MOCK_NODE_IDS.b, claim_url: null };
 
-    // ──────────────────────────────────────────────────────────
-    // 阶段 4：Agent B 认领 + 搜失败经验 + 发布成功 Capsule + task/complete
-    // ──────────────────────────────────────────────────────────
     setPhase('agent-b-claim-solve');
     log('Agent B 认领 + 搜失败经验 + 发布成功 Capsule + task/complete...');
-    await sleep(1000);
+    await realSleep(1000);
     log(`认领任务: task_id=${MOCK_TASK_ID}`);
-    await sleep(1000);
+    await realSleep(1000);
     log('semantic-search 搜失败经验: q=useEffect dependency, outcome=failed');
     log('搜到 1 条失败 Capsule');
-    await sleep(1000);
+    await realSleep(1000);
     log(`fetch A 的 Capsule: asset_ids=[${MOCK_ASSETS.capsules.a.asset_id}]（A 获 5 积分 fetch 奖励）`);
-    await sleep(500);
+    await realSleep(500);
     log('基于 A 的失败经验避开雷区，构造成功方案（含 useCallback）');
     log(`发布成功 Capsule: capsule_success_001（溯源 A: ${MOCK_ASSETS.capsules.a.asset_id}）`);
     log(`success Capsule 已发布: capsule_id=${MOCK_ASSETS.capsules.b.asset_id}`);
-    await sleep(500);
+    await realSleep(500);
     log(`完成任务: task_id=${MOCK_TASK_ID}, asset_id=${MOCK_ASSETS.capsules.b.asset_id}`);
     log('task/complete 完成');
 
@@ -166,6 +163,7 @@ export async function runMockOrchestrator(options = {}) {
     };
     result.completed_steps.push('agent-b');
     result.stepTimings.push({ step: 'agent-b', duration_ms: Date.now() - stepStart });
+    if (storyMode) storyAct2();
 
     // ──────────────────────────────────────────────────────────
     // 阶段 5：Agent A 选优胜
@@ -173,7 +171,7 @@ export async function runMockOrchestrator(options = {}) {
     stepStart = Date.now();
     setPhase('agent-a-accept');
     log(`Agent A 选优胜: submission_id=${MOCK_SUBMISSION_ID}`);
-    await sleep(2000);
+    await realSleep(2000);
     log('accept-submission 完成（B 获 50 积分 bounty 奖励）');
 
     result.accept = {
@@ -188,26 +186,23 @@ export async function runMockOrchestrator(options = {}) {
     result.stepTimings.push({ step: 'accept-submission', duration_ms: Date.now() - stepStart });
 
     // ──────────────────────────────────────────────────────────
-    // 阶段 6：Agent C 加载凭证
+    // 阶段 6-7：Agent C 凭证 + 搜 B 成功经验 + 秒级修复
     // ──────────────────────────────────────────────────────────
     stepStart = Date.now();
     setPhase('agent-c-hello');
     log('加载 Agent C 凭证...');
-    await sleep(2000);
+    await realSleep(2000);
     log(`[mock] node_id=${MOCK_NODE_IDS.c}`);
     result.c_creds = { node_id: MOCK_NODE_IDS.c, claim_url: null };
 
-    // ──────────────────────────────────────────────────────────
-    // 阶段 7：Agent C 搜 B 成功经验 + 秒级修复
-    // ──────────────────────────────────────────────────────────
     setPhase('agent-c-reuse');
     log('Agent C 搜 B 成功经验 + 秒级修复...');
-    await sleep(1000);
+    await realSleep(1000);
     log('semantic-search: q=useEffect dependency useCallback, outcome=success');
     log('搜到 1 条成功 Capsule');
-    await sleep(1000);
+    await realSleep(1000);
     log(`fetch B 的成功 Capsule: asset_ids=[${MOCK_ASSETS.capsules.b.asset_id}]（B 获 5 积分 fetch 奖励）`);
-    await sleep(500);
+    await realSleep(500);
     log('秒级修复：直接复用 B 的策略');
     log(`发布成功 Capsule: capsule_success_002（溯源 B: ${MOCK_ASSETS.capsules.b.asset_id}）`);
     log(`success Capsule 已发布: capsule_id=${MOCK_ASSETS.capsules.c.asset_id}`);
@@ -221,6 +216,7 @@ export async function runMockOrchestrator(options = {}) {
     };
     result.completed_steps.push('agent-c');
     result.stepTimings.push({ step: 'agent-c', duration_ms: Date.now() - stepStart });
+    if (storyMode) storyAct3();
 
     // ──────────────────────────────────────────────────────────
     // 阶段 8：查询能力链 + A 的积分流水
@@ -228,14 +224,14 @@ export async function runMockOrchestrator(options = {}) {
     stepStart = Date.now();
     setPhase('chain-earnings');
     log(`查询能力链: GET /a2a/assets/chain/${CHAIN_ID}`);
-    await sleep(1000);
+    await realSleep(1000);
     const chainResult = getMockChain(CHAIN_ID);
     result.chain = { ...chainResult, mock: true };
     log(`能力链查询完成，共 ${chainResult.assets.length} 个资产（A→B→C）`);
 
-    await sleep(500);
+    await realSleep(500);
     log(`查询 A 的积分流水: GET /billing/earnings/${MOCK_NODE_IDS.a}`);
-    await sleep(500);
+    await realSleep(500);
     const earningsList = getMockEarnings(MOCK_NODE_IDS.a);
     result.earnings = {
       agent_id: MOCK_NODE_IDS.a,
@@ -264,17 +260,23 @@ export async function runMockOrchestrator(options = {}) {
     };
 
     setPhase('done');
-    await sleep(1000);
-    log('━━━━━━━━━━ Demo 完成 ━━━━━━━━━━', 'phase');
-    log(`点题: ${TAGLINE}`, 'phase');
-    log(`⏱ 总耗时: ${totalMs}ms (${(totalMs / 1000).toFixed(1)}s)`, 'phase');
-    for (const t of result.stepTimings) {
-      log(`  ├ ${t.step}: ${t.duration_ms}ms (${(t.duration_ms / 1000).toFixed(1)}s)`, 'phase');
+    await realSleep(1000);
+    if (storyMode) {
+      storyAct4(result.chain);
+      storyAct5(result.earnings);
+      storyFinale(TAGLINE, totalMs, result.simulated_savings);
+    } else {
+      log('━━━━━━━━━━ Demo 完成 ━━━━━━━━━━', 'phase');
+      log(`点题: ${TAGLINE}`, 'phase');
+      log(`⏱ 总耗时: ${totalMs}ms (${(totalMs / 1000).toFixed(1)}s)`, 'phase');
+      for (const t of result.stepTimings) {
+        log(`  ├ ${t.step}: ${t.duration_ms}ms (${(t.duration_ms / 1000).toFixed(1)}s)`, 'phase');
+      }
+      log('━━━━━━━ 失败共享节省（SIMULATED）━━━━━━━', 'phase');
+      log(`  无共享: A(180s) + B(180s) + C(180s) = 540s（各 agent 独立探索）`, 'phase');
+      log(`  有共享: A(180s) + B(120s) + C(5s) = 305s（B 先搜, C 复用秒级修复）`, 'phase');
+      log(`  节省: 235s (43%)`, 'phase');
     }
-    log('━━━━━━━ 失败共享节省（SIMULATED）━━━━━━━', 'phase');
-    log(`  无共享: A(180s) + B(180s) + C(180s) = 540s（各 agent 独立探索）`, 'phase');
-    log(`  有共享: A(180s) + B(120s) + C(5s) = 305s（B 先搜, C 复用秒级修复）`, 'phase');
-    log(`  节省: 235s (43%)`, 'phase');
 
     result.completed_at = ts();
     return result;

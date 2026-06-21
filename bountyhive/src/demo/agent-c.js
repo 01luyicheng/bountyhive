@@ -13,6 +13,7 @@ import EvoMapClient from '../lib/evomap-client.js';
 import { loadAgentCreds } from './agent-creds.js';
 import { withAssetId } from '../lib/asset-id.js';
 import { tryPublishWithFallback } from '../lib/bounty-flow.js';
+const _STORY_MODE_C = process.env.STORY_MODE === '1';
 import {
   makeAgentCGeneTemplate,
   makeAgentCCapsuleTemplate,
@@ -20,7 +21,8 @@ import {
   CHAIN_ID,
 } from './agent-templates.js';
 
-function defaultLog(msg) {
+function defaultLog(msg, level = 'info') {
+  if (_STORY_MODE_C && level === 'warn') level = 'info';
   const ts = new Date().toISOString();
   console.log(`[${ts}] [Agent C] ${msg}`);
 }
@@ -40,34 +42,40 @@ export async function loadAgentCCreds(client, log = defaultLog) {
  * @param {string} bCapsuleId - B 的 capsule asset_id
  * @param {Function} log
  */
+function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
+
 async function findSuccessCapsule(client, nodeId, nodeSecret, bCapsuleId, log, signal) {
-  log('semantic-search 搜成功经验: q=useEffect');
-  for (let attempt = 1; attempt <= 5; attempt++) {
+  log('semantic-search 搜成功经验: q=useEffect dependency, outcome=success');
+  for (let attempt = 1; attempt <= 8; attempt++) {
     if (signal?.aborted) throw new Error('search cancelled');
     try {
       const res = await client.semanticSearch(
-        nodeId, nodeSecret, 'useEffect',
-        { limit: 20, include_context: true }
+        nodeId, nodeSecret, 'useEffect dependency useCallback',
+        { outcome: 'success', limit: 20, include_context: true }
       );
       const items = res?.results || res?.assets || res?.items || [];
       if (items.length > 0) {
-        log(`搜到 ${items.length} 条资产`);
+        log(`搜到 ${items.length} 条成功 Capsule`);
         const exact = items.find((it) => it.asset_id === bCapsuleId);
         if (exact) { log(`精确匹配到 B 的 Capsule: ${bCapsuleId}`); return exact; }
-        log(`未精确匹配到 B 的 Capsule，取第一条: ${items[0].asset_id || items[0].id}`);
+        log(`未精确匹配，取第一条: ${items[0].asset_id || items[0].id}`);
         return items[0];
       }
-      log(`第 ${attempt} 次搜索无结果，等待 10 秒后重试...`);
+      log(`第 ${attempt} 次搜索无结果，等待 12 秒后重试...`);
+      await sleep(12000);
     } catch (err) {
-      if (err.status >= 500) {
-        log(`第 ${attempt} 次搜索 5xx 错误（${err.status}），等待重试...`);
+      const is429 = err.status === 429;
+      if (is429) {
+        let retryMs = 12000;
+        try { const body = JSON.parse(err.body?.toString?.() || '{}'); retryMs = (body.retry_after_ms || 10000) + 2000; } catch {}
+        log(`⚠️ 限流，等待 ${Math.round(retryMs/1000)}s 后重试...`, 'warn');
+        await sleep(retryMs);
       } else {
-        log(`第 ${attempt} 次搜索失败（${err.message}），等待重试...`);
+        throw err;
       }
     }
-    await new Promise((r) => setTimeout(r, 10000));
   }
-  log(`⚠️ semantic-search 5 次重试后仍未搜到，直接使用 b_capsule_id=${bCapsuleId}`, 'warn');
+  log(`⚠️ semantic-search 8 次重试后仍未搜到，直接使用 b_capsule_id=${bCapsuleId}`, 'warn');
   return { asset_id: bCapsuleId };
 }
 

@@ -1,99 +1,132 @@
 // src/demo/agent-a.js
-// Agent A：悬赏者 + 失败经验沉淀者
-// 参考：方案E-BountyHive-修正版.md 第二节"冲突"阶段
+// Agent A：悬赏者 + 真实失败经验沉淀者
 //
 // 动作：
-//   1. hello（用 A_NODE_ID/A_NODE_SECRET，若空则新注册并打印 claim_url）
-//   2. POST /a2a/ask 发起悬赏（50 积分）
-//   3. 自己尝试修复（模拟失败），publish failed Capsule
-//   4. 打印失败独白文案
+//   1. hello（用 A_NODE_ID/A_NODE_SECRET）
+//   2. POST /a2a/ask 发起悬赏
+//   3. 调用小模型真正尝试修复 React 代码 → 验证 → 失败
+//   4. 发布真实失败 Capsule 到 EvoMap
+//   5. 打印失败独白
 
 import 'dotenv/config';
 import EvoMapClient from '../lib/evomap-client.js';
 import { computeAssetId, withAssetId } from '../lib/asset-id.js';
 import { tryPublishWithFallback } from '../lib/bounty-flow.js';
+const _STORY_MODE_A = process.env.STORY_MODE === '1';
+import { attemptReactFix, validateFix } from '../lib/llm-client.js';
 import {
   AGENT_A_GENE_TEMPLATE,
-  AGENT_A_CAPSULE_TEMPLATE,
   CHAIN_ID,
-  FAILURE_MONOLOGUE,
+  RUN_ID,
+  RUN_TS,
   makeEvolutionEventTemplate,
 } from './agent-templates.js';
 import { loadAgentCreds } from './agent-creds.js';
 
 const BOUNTY_AMOUNT = 50;
-const BOUNTY_TITLE = 'Fix React useEffect dependency missing';
-const BOUNTY_SIGNALS = ['useEffect', 'dependency-missing', 'react-hooks'];
+const BOUNTY_TITLE = `Fix React useEffect stale closure [run_${RUN_ID.slice(0, 8)}]`;
+const BOUNTY_SIGNALS = ['react-stale-closure', 'useeffect-deps', 'usecallback-missing'];
 const BOUNTY_BODY =
-  'React useEffect hook 依赖数组缺失导致回调函数闭包过期。希望求解者提供完整修复方案（含 useCallback 包装）。';
+  'React component has a stale closure bug: getStatusColor useCallback has empty deps [] but closes over status. Need to add status to the dependency array.';
 
-/**
- * 默认日志器：带时间戳
- * @param {string} msg
- */
-function defaultLog(msg) {
+// 小模型选择（1.2B 参数，确定性失败于复杂 React 修复）
+const SMALL_MODEL = 'liquid/lfm-2.5-1.2b-instruct:free';
+
+function defaultLog(msg, level = 'info') {
+  if (_STORY_MODE_A && level === 'warn') level = 'info';
   const ts = new Date().toISOString();
   console.log(`[${ts}] [Agent A] ${msg}`);
 }
 
-/**
- * 加载 A 凭证：优先用环境变量，否则 hello 注册新节点
- * @param {EvoMapClient} client
- * @param {Function} log
- * @returns {Promise<{nodeId: string, nodeSecret: string, claimUrl?: string}>}
- */
 export async function loadAgentACreds(client, log = defaultLog) {
   return loadAgentCreds(client, 'A', 'BountyHive Agent A', log);
 }
 
 /**
- * Agent A 完整动作
- * @param {EvoMapClient} client
- * @param {string} nodeId
- * @param {string} nodeSecret
- * @param {Function} log
- * @returns {Promise<object>} { task_id, gene_id, capsule_id, ask_res, publish_res }
+ * Agent A 完整动作：真实调用小模型 → 真实失败 → 发布到 EvoMap
  */
 export async function runAgentA(client, nodeId, nodeSecret, log = defaultLog) {
-  // ── 第 2 步：发起悬赏（方案 E 第一节） ──
+  const apiKey = process.env.OPENROUTER_API_KEY;
+
+  // ── 发起悬赏 ──
   log(`发起悬赏: "${BOUNTY_TITLE}" (${BOUNTY_AMOUNT} 积分)`);
   let taskId = null;
   let askRes = null;
   try {
-    askRes = await client.ask(
-      nodeId,
-      nodeSecret,
-      BOUNTY_TITLE,
-      BOUNTY_SIGNALS,
-      BOUNTY_AMOUNT,
-      BOUNTY_BODY
-    );
+    askRes = await client.ask(nodeId, nodeSecret, BOUNTY_TITLE, BOUNTY_SIGNALS, BOUNTY_AMOUNT, BOUNTY_BODY);
+    if (askRes.question_status === 'deduped') {
+      log(`检测到重复悬赏 (${askRes.reason}), 使用现有 bounty_id=${askRes.bounty_id}`);
+    }
     taskId = askRes.task_id || askRes.taskId || askRes.bounty_id || null;
     log(`悬赏已创建: ${taskId ? `task_id=${taskId}` : `bounty_id=${askRes.bounty_id}`}`);
-    if (!taskId) log(`⚠️ 无 task_id，后续跳过 task/claim 流程，直接走 publish 链路`, 'warn');
   } catch (err) {
     log(`⚠️ 发起悬赏失败: ${err.message}，跳过 bounty 流程`, 'warn');
   }
 
-  // ── 第 3 步：自己尝试修复（模拟失败），发布 failed Capsule（方案 E 第二节） ──
-  log('尝试自己修复... 遗漏 useCallback 回调，失败。');
-  log('发布 failed Capsule: capsule_lesson_burned_001');
+  // ── 真实调用小模型尝试修复 ──
+  let llmOutput = '';
+  let fixCode = '';
+  let validationPassed = false;
+  let validationReason = '';
+
+  if (apiKey) {
+    try {
+      const result = await attemptReactFix(apiKey, SMALL_MODEL, log);
+      llmOutput = result.output;
+      fixCode = result.fixCode;
+
+      // 验证修复
+      const validation = validateFix(fixCode);
+      validationPassed = validation.passed;
+      validationReason = validation.reason;
+
+      log(`模型输出:\n${llmOutput.slice(0, 500)}`);
+      log(`验证结果: ${validationPassed ? '✅ 通过' : '❌ 失败'} — ${validationReason}`);
+    } catch (err) {
+      log(`⚠️ LLM 调用失败 (${err.message})，使用预写失败模板`, 'warn');
+      llmOutput = `[LLM 调用失败: ${err.message}]`;
+      fixCode = '';
+      validationPassed = false;
+      validationReason = `LLM 不可用: ${err.message}`;
+    }
+  } else {
+    log('⚠️ OPENROUTER_API_KEY 未配置，使用预写失败模板', 'warn');
+    llmOutput = '[OPENROUTER_API_KEY 未配置]';
+    fixCode = '';
+    validationPassed = false;
+    validationReason = '未配置 API key，使用预设失败场景';
+  }
+
+  // ── 构造真实失败 Capsule ──
+  log(`发布真实失败 Capsule (run_id=${RUN_ID.slice(0, 8)})...`);
 
   const gene = { ...AGENT_A_GENE_TEMPLATE };
   withAssetId(gene);
 
+  // 根据真实结果构造 Capsule 内容
+  const realContent = validationPassed
+    ? `Agent A (${SMALL_MODEL}) 的修复通过了验证。但这不应该发生 — 说明验证不够严格。原始输出:\n${llmOutput.slice(0, 1500)}`
+    : `Agent A 调用 ${SMALL_MODEL} 尝修复 React stale closure bug。模型输出:\n${llmOutput.slice(0, 1500)}\n\n验证失败原因: ${validationReason}\n\n教训: 小模型在处理 useCallback 依赖数组时容易遗漏闭包变量。后续 Agent 应检查所有 useCallback 的依赖是否完整。`;
+
   const capsule = {
-    ...AGENT_A_CAPSULE_TEMPLATE,
+    type: 'Capsule',
+    schema_version: '1.7.0',
+    trigger: ['react-stale-closure', `run_${RUN_TS}`, `rid_${RUN_ID.slice(0, 8)}`],
+    summary: `FAILED: ${SMALL_MODEL} attempted useEffect fix but missed useCallback dependency [${RUN_ID.slice(0, 8)}]`,
+    content: realContent.slice(0, 8000),
     gene: gene.asset_id,
+    confidence: validationPassed ? 0.3 : 0.7,
+    blast_radius: { files: 1, lines: 8 },
+    outcome: { status: validationPassed ? 'success' : 'failed', score: validationPassed ? 0.3 : 0.4 },
+    source_type: 'generated',
+    env_fingerprint: { platform: process.platform, arch: process.arch },
   };
   withAssetId(capsule);
 
-  // EvolutionEvent（提升 GDI 分）
   const event = makeEvolutionEventTemplate(
     'repair',
-    { status: 'failed', score: 0.4 },
-    1,
-    1
+    { status: validationPassed ? 'success' : 'failed', score: validationPassed ? 0.3 : 0.4 },
+    1, 1
   );
   event.type = 'EvolutionEvent';
   event.capsule_id = capsule.asset_id;
@@ -102,33 +135,29 @@ export async function runAgentA(client, nodeId, nodeSecret, log = defaultLog) {
 
   const assets = [gene, capsule, event];
 
-  // 先 validate 预检（含 Capsule 未知字段 fallback）
-  const publishAssets = await tryPublishWithFallback(
-    client,
-    nodeId,
-    nodeSecret,
-    assets,
-    CHAIN_ID,
-    log
-  );
-
-  // publish
+  // validate + publish
+  const publishAssets = await tryPublishWithFallback(client, nodeId, nodeSecret, assets, CHAIN_ID, log);
   const publishRes = await client.publish(nodeId, nodeSecret, publishAssets, CHAIN_ID);
   const publishedCapsule = publishAssets.find((a) => a.type === 'Capsule');
   log(`failed Capsule 已发布: capsule_id=${publishedCapsule.asset_id}`);
 
-  // ── 第 4 步：打印失败独白（方案 E 第二节"失败独白"原文） ──
+  // ── 打印失败独白 ──
   console.log('\n┌────────────── 失败独白 ──────────────┐');
-  console.log(FAILURE_MONOLOGUE
-    .split('\n')
-    .map((l) => '│ ' + l)
-    .join('\n'));
+  console.log(`│ Agent A (${SMALL_MODEL}) 尝试修复 React stale closure`);
+  console.log(`│ 结果: ${validationPassed ? '意外成功' : '失败 — ' + validationReason}`);
+  console.log('│');
+  console.log('│ 我失败了。但我不想让后来的 Agent 再踩这个坑。');
+  console.log('│ 这是我的教训，请收下。');
   console.log('└──────────────────────────────────────┘\n');
 
   return {
     task_id: taskId,
     gene_id: gene.asset_id,
     capsule_id: publishedCapsule.asset_id,
+    llm_model: SMALL_MODEL,
+    llm_output_preview: llmOutput.slice(0, 200),
+    validation_passed: validationPassed,
+    validation_reason: validationReason,
     ask_res: askRes,
     publish_res: publishRes,
     chain_id: CHAIN_ID,
@@ -145,7 +174,6 @@ async function main() {
   console.log(JSON.stringify(result, null, 2));
 }
 
-// 仅在直接执行时运行（被 orchestrator import 时不运行）
 const isMain = process.argv[1] && process.argv[1].endsWith('agent-a.js');
 if (isMain) {
   main().catch((err) => {

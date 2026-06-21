@@ -357,7 +357,13 @@ app.get('/api/chain/:chainId', async (req, res) => {
     const cr = await client.getChain(c.nodeId, c.nodeSecret, chainId);
     debugRaw('chain', cr);
     const items = cr?.assets || cr?.items || [];
-    res.json({ chain_id: chainId, assets: items.map((item) => pick(item, CAPSULE_WHITELIST)) });
+    const fallback = cr?._fallback || false;
+    res.json({
+      chain_id: chainId,
+      assets: items.map((item) => pick(item, CAPSULE_WHITELIST)),
+      count: cr?.count ?? items.length,
+      source: fallback ? 'built-from-relationships' : 'chain-endpoint',
+    });
   } catch (err) {
     sendInternalError(res, req, err);
   }
@@ -378,7 +384,6 @@ app.get('/api/earnings/:agentId', async (req, res) => {
   }
   try {
     const creds = getAgentCreds();
-    // 严格校验 agentId 必须对应 A/B/C 的 node_id
     let secret = null;
     if (agentId === creds.a.nodeId) secret = creds.a.nodeSecret;
     else if (agentId === creds.b.nodeId) secret = creds.b.nodeSecret;
@@ -391,11 +396,18 @@ app.get('/api/earnings/:agentId', async (req, res) => {
     const er = await client.getEarnings(agentId, secret, agentId);
     debugRaw('earnings', er);
     const items = er?.entries || er?.items || [];
-    res.json({
+    const creditBalance = er?.credit_balance ?? null;
+    const response = {
       agent_id: agentId,
       earnings: items.map((item) => pick(item, EARNING_ENTRY_WHITELIST)),
       total: items.reduce((s, item) => s + (item.amount || 0), 0),
-    });
+    };
+    if (er.error === 'earnings_requires_user_session') {
+      response.earnings_endpoint_note = 'billing/earnings requires web session; shown credit_balance from heartbeat';
+      response.credit_balance = creditBalance;
+      response.source = 'heartbeat-balance';
+    }
+    res.json(response);
   } catch (err) {
     sendInternalError(res, req, err);
   }

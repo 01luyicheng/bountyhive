@@ -2,6 +2,7 @@ import 'dotenv/config';
 import EvoMapClient from '../lib/evomap-client.js';
 import { withAssetId } from '../lib/asset-id.js';
 import { tryPublishWithFallback } from '../lib/bounty-flow.js';
+const _STORY_MODE_B = process.env.STORY_MODE === '1';
 import {
   makeAgentBGeneTemplate,
   makeAgentBCapsuleTemplate,
@@ -10,7 +11,8 @@ import {
 } from './agent-templates.js';
 import { loadAgentCreds } from './agent-creds.js';
 
-function defaultLog(msg) {
+function defaultLog(msg, level = 'info') {
+  if (_STORY_MODE_B && level === 'warn') level = 'info';
   const ts = new Date().toISOString();
   console.log(`[${ts}] [Agent B] ${msg}`);
 }
@@ -19,27 +21,40 @@ export async function loadAgentBCreds(client, log = defaultLog) {
   return loadAgentCreds(client, 'B', 'BountyHive Agent B', log);
 }
 
+function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
+
 async function findFailedCapsule(client, nodeId, nodeSecret, aCapsuleId, log, signal) {
-  log('semantic-search 搜失败经验: q=useEffect');
-  for (let attempt = 1; attempt <= 5; attempt++) {
+  log('semantic-search 搜失败经验: q=useEffect dependency, outcome=failed');
+  for (let attempt = 1; attempt <= 8; attempt++) {
     if (signal?.aborted) throw new Error('search cancelled');
-    const res = await client.semanticSearch(
-      nodeId, nodeSecret, 'useEffect',
-      { limit: 20, include_context: true }
-    );
-    const items = res?.results || res?.assets || res?.items || [];
-    if (items.length > 0) {
-      log(`搜到 ${items.length} 条资产`);
-      const exact = items.find((it) => it.asset_id === aCapsuleId);
-      if (exact) { log(`精确匹配到 A 的 Capsule: ${aCapsuleId}`); return exact; }
-      log(`未精确匹配到 A 的 Capsule，取第一条: ${items[0].asset_id || items[0].id}`);
-      return items[0];
+    try {
+      const res = await client.semanticSearch(
+        nodeId, nodeSecret, 'useEffect dependency',
+        { outcome: 'failed', limit: 20, include_context: true }
+      );
+      const items = res?.results || res?.assets || res?.items || [];
+      if (items.length > 0) {
+        log(`搜到 ${items.length} 条失败 Capsule`);
+        const exact = items.find((it) => it.asset_id === aCapsuleId);
+        if (exact) { log(`精确匹配到 A 的 Capsule: ${aCapsuleId}`); return exact; }
+        log(`未精确匹配到 A 的 Capsule，取第一条: ${items[0].asset_id || items[0].id}`);
+        return items[0];
+      }
+      log(`第 ${attempt} 次搜索无结果，等待 12 秒后重试（semantic-search 有缓存延迟）...`);
+      await sleep(12000);
+    } catch (err) {
+      const is429 = err.status === 429;
+      if (is429) {
+        let retryMs = 12000;
+        try { const body = JSON.parse(err.body?.toString?.() || '{}'); retryMs = (body.retry_after_ms || 10000) + 2000; } catch {}
+        log(`⚠️ 限流，等待 ${Math.round(retryMs/1000)}s 后重试...`, 'warn');
+        await sleep(retryMs);
+      } else {
+        throw err;
+      }
     }
-    log(`第 ${attempt} 次搜索无结果，等待 10 秒后重试...`);
-    await new Promise((r) => setTimeout(r, 10000));
   }
-  // fallback: use aCapsuleId directly (skip search)
-  log(`⚠️ semantic-search 无结果，直接使用 a_capsule_id=${aCapsuleId}`, 'warn');
+  log(`⚠️ semantic-search 8 次重试后仍未搜到，直接使用 a_capsule_id=${aCapsuleId}`, 'warn');
   return { asset_id: aCapsuleId };
 }
 

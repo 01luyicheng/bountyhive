@@ -16,9 +16,15 @@ import { loadAgentACreds, runAgentA } from './agent-a.js';
 import { loadAgentBCreds, runAgentB } from './agent-b.js';
 import { loadAgentCCreds, runAgentC } from './agent-c.js';
 import { CHAIN_ID, TAGLINE } from './agent-templates.js';
+import { runMockOrchestrator } from './mock-orchestrator.js';
+import { STORY_MODE, SKIP_SEARCH, storyAct1, storyAct2, storyAct3, storyAct4, storyAct5, storyFinale, makeStoryLogger } from './story-printer.js';
 
 function ts() {
   return new Date().toISOString();
+}
+
+function sleep(ms) {
+  return new Promise((r) => setTimeout(r, ms));
 }
 
 function makeLogger(sink, onLog) {
@@ -40,8 +46,8 @@ function makeLogger(sink, onLog) {
  * @returns {Promise<object>} 完整结果
  */
 export async function runOrchestrator(options = {}) {
-  const { logSink = [], onPhase = () => {}, onLog = null } = options;
-  const log = makeLogger(logSink, onLog);
+  const { logSink = [], onPhase = () => {}, onLog = null, storyMode = false, skipSearch = false } = options;
+  const log = storyMode ? makeStoryLogger(logSink, onLog) : makeLogger(logSink, onLog);
 
   const hubUrl = process.env.A2A_HUB_URL || 'https://evomap.ai';
   const client = new EvoMapClient(hubUrl);
@@ -84,6 +90,15 @@ export async function runOrchestrator(options = {}) {
     result.a = aResult;
     result.completed_steps.push('agent-a');
     result.stepTimings.push({ step: 'agent-a', duration_ms: Date.now() - stepStart });
+    if (storyMode) storyAct1(aResult);
+
+    // 等待 Hub 索引（semantic-search 有缓存延迟）
+    if (skipSearch) {
+      log('SKIP_SEARCH 模式：跳过等待');
+    } else {
+      log('等待 15 秒让 Hub 索引新发布的 Capsule...');
+      await sleep(15000);
+    }
 
     // ──────────────────────────────────────────────────────────
     // 阶段 2：Agent B 认领 + 成功 Capsule + task/complete
@@ -110,6 +125,7 @@ export async function runOrchestrator(options = {}) {
     result.b = bResult;
     result.completed_steps.push('agent-b');
     result.stepTimings.push({ step: 'agent-b', duration_ms: Date.now() - stepStart });
+    if (storyMode) storyAct2();
 
     // ──────────────────────────────────────────────────────────
     // 阶段 3：Agent A 调用 accept-submission 选优胜
@@ -140,6 +156,14 @@ export async function runOrchestrator(options = {}) {
     }
     result.stepTimings.push({ step: 'accept-submission', duration_ms: Date.now() - stepStart });
 
+    // 等待 Hub 索引 B 的 Capsule
+    if (skipSearch) {
+      log('SKIP_SEARCH 模式：跳过等待');
+    } else {
+      log('等待 15 秒让 Hub 索引 B 的 success Capsule...');
+      await sleep(15000);
+    }
+
     // ──────────────────────────────────────────────────────────
     // 阶段 4：Agent C 复用 B 经验秒级修复
     // ──────────────────────────────────────────────────────────
@@ -164,6 +188,7 @@ export async function runOrchestrator(options = {}) {
     result.c = cResult;
     result.completed_steps.push('agent-c');
     result.stepTimings.push({ step: 'agent-c', duration_ms: Date.now() - stepStart });
+    if (storyMode) storyAct3();
 
     // ──────────────────────────────────────────────────────────
     // 阶段 5：打印能力链 + A 的积分流水
@@ -174,22 +199,43 @@ export async function runOrchestrator(options = {}) {
     try {
       const chainRes = await client.getChain(aCreds.nodeId, aCreds.nodeSecret, CHAIN_ID);
       result.chain = chainRes;
-      const chainItems = chainRes?.assets || chainRes?.items || chainRes || [];
+      const chainItems = chainRes?.assets || chainRes?.items || [];
       const chainCount = Array.isArray(chainItems) ? chainItems.length : 0;
-      log(`能力链查询完成，共 ${chainCount} 个资产（A→B→C）`);
+      const chainSource = chainRes?._fallback ? '（从 published-by-me 溯源构建）' : '';
+      log(`能力链查询完成，共 ${chainCount} 个资产（A→B→C）${chainSource}`);
     } catch (err) {
       log(`⚠️ 能力链查询失败: ${err.message}`, 'warn');
-      result.chain = { error: err.message };
+      // 即使失败也尝试用 published-by-me 构建
+      try {
+        const fallbackChain = await client.buildChainFromPublished(aCreds.nodeId, aCreds.nodeSecret, CHAIN_ID);
+        result.chain = { ...fallbackChain, _fallback: true, _fallback_error: err.message };
+        log(`fallback: 从 published-by-me 构建能力链，共 ${fallbackChain.assets.length} 个资产`);
+      } catch (err2) {
+        result.chain = { error: err.message, fallback_error: err2.message };
+      }
     }
 
     log(`查询 A 的积分流水: GET /billing/earnings/${aCreds.nodeId}`);
     try {
       const earningsRes = await client.getEarnings(aCreds.nodeId, aCreds.nodeSecret, aCreds.nodeId);
       result.earnings = earningsRes;
-      log(`积分流水查询完成`);
+      if (earningsRes.error === 'earnings_requires_user_session') {
+        log(`⚠️ 积分流水端点需用户浏览器 session，fallback 到心跳余额`, 'warn');
+        log(`   credit_balance ≈ ${earningsRes.credit_balance ?? '未知'} 积分`);
+      } else {
+        log(`积分流水查询完成`);
+      }
     } catch (err) {
       log(`⚠️ 积分流水查询失败: ${err.message}`, 'warn');
-      result.earnings = { error: err.message };
+      // fallback: 用心跳余额
+      try {
+        const hb = await client.heartbeat(aCreds.nodeId, aCreds.nodeSecret);
+        const balance = hb?.credit_balance ?? null;
+        result.earnings = { error: err.message, credit_balance: balance, entries: [], total: 0 };
+        log(`fallback: 心跳余额 ≈ ${balance ?? '未知'} 积分`);
+      } catch {
+        result.earnings = { error: err.message, entries: [], total: 0 };
+      }
     }
     result.stepTimings.push({ step: 'chain-earnings', duration_ms: Date.now() - stepStart });
 
@@ -199,11 +245,17 @@ export async function runOrchestrator(options = {}) {
     const totalMs = Date.now() - new Date(result.started_at).getTime();
     result.total_duration_ms = totalMs;
     setPhase('done');
-    log('━━━━━━━━━━ Demo 完成 ━━━━━━━━━━', 'phase');
-    log(`点题: ${TAGLINE}`, 'phase');
-    log(`⏱ 总耗时: ${totalMs}ms (${(totalMs / 1000).toFixed(1)}s)`, 'phase');
-    for (const t of result.stepTimings) {
-      log(`  ├ ${t.step}: ${t.duration_ms}ms (${(t.duration_ms / 1000).toFixed(1)}s)`, 'phase');
+    if (storyMode) {
+      storyAct4(result.chain);
+      storyAct5(result.earnings);
+      storyFinale(TAGLINE, totalMs, result.simulated_savings);
+    } else {
+      log('━━━━━━━━━━ Demo 完成 ━━━━━━━━━━', 'phase');
+      log(`点题: ${TAGLINE}`, 'phase');
+      log(`⏱ 总耗时: ${totalMs}ms (${(totalMs / 1000).toFixed(1)}s)`, 'phase');
+      for (const t of result.stepTimings) {
+        log(`  ├ ${t.step}: ${t.duration_ms}ms (${(t.duration_ms / 1000).toFixed(1)}s)`, 'phase');
+      }
     }
     result.completed_at = ts();
     return result;
@@ -220,20 +272,67 @@ export async function runOrchestrator(options = {}) {
   }
 }
 
+function hasCredentials() {
+  return !!(process.env.A_NODE_ID && process.env.A_NODE_SECRET) ||
+         !!(process.env.B_NODE_ID && process.env.B_NODE_SECRET) ||
+         !!(process.env.C_NODE_ID && process.env.C_NODE_SECRET);
+}
+
 // ── 独立运行入口 ──
 async function main() {
-  console.log('┌────────────────────────────────────────────┐');
-  console.log('│  BountyHive Demo 编排启动                  │');
-  console.log('│  方案 E：悬赏市场蜂群接单进化体            │');
-  console.log('└────────────────────────────────────────────┘');
+  const args = process.argv.slice(2);
+  const useMock = args.includes('--mock');
+  const forceReal = args.includes('--force-real');
+  const help = args.includes('--help') || args.includes('-h');
+
+  if (help) {
+    console.log('用法: node src/demo/orchestrator.js [options]');
+    console.log('');
+    console.log('选项:');
+    console.log('  --mock       强制 Mock 模式');
+    console.log('  --force-real 强制真实模式');
+    console.log('  -h, --help   显示帮助');
+    console.log('');
+    console.log('环境变量:');
+    console.log('  STORY_MODE=1  故事模式');
+    console.log('  SKIP_SEARCH=1 跳过搜索等待');
+    process.exit(0);
+  }
+
+  const storyMode = STORY_MODE;
+
+  if (storyMode) {
+    console.log('\n  🍯  BountyHive Demo · 故事模式  🍯');
+    console.log('  ======================================\n');
+  } else {
+    console.log('┌────────────────────────────────────────────┐');
+    console.log('│  BountyHive Demo 编排启动                  │');
+    console.log('│  方案 E：悬赏市场蜂群接单进化体            │');
+    console.log('└────────────────────────────────────────────┘');
+  }
+
   try {
-    const result = await runOrchestrator();
-    console.log('\n=== 最终结果 ===');
-    console.log(JSON.stringify(result, null, 2));
+    let result;
+    if (useMock || (!forceReal && !hasCredentials())) {
+      if (!useMock && !storyMode) {
+        console.log('⚠️  未检测到凭证，自动切换到 Mock 模式');
+      }
+      result = await runMockOrchestrator({ storyMode, skipSearch: SKIP_SEARCH });
+    } else {
+      result = await runOrchestrator({ storyMode, skipSearch: SKIP_SEARCH });
+    }
+    if (!storyMode) {
+      console.log('\n=== 最终结果 ===');
+      console.log(JSON.stringify(result, null, 2));
+    }
     process.exit(0);
   } catch (err) {
-    console.error('\n=== Demo 失败 ===');
-    console.error(err.message);
+    if (!storyMode) {
+      console.error('\n=== Demo 失败 ===');
+      console.error(err.message);
+    } else {
+      console.log(`\n  ❌ Demo 失败: ${err.message}`);
+    }
     process.exit(1);
   }
 }

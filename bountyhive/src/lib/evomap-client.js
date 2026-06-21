@@ -47,54 +47,68 @@ export class EvoMapClient {
 
   /**
    * 统一请求封装，错误时打印明确信息
+   * 429 限流时自动重试最多 3 次（从响应体读取 retry_after_ms）
    * @param {string} method
    * @param {string} path
    * @param {object} opts - { body, token, query }
    * @returns {Promise<object>} 解析后的 JSON 响应
    */
   async _request(method, path, opts = {}) {
-    const url = new URL(this.hubUrl + path);
-    if (opts.query) {
-      for (const [k, v] of Object.entries(opts.query)) {
-        if (v !== undefined && v !== null) url.searchParams.set(k, String(v));
+    const MAX_RETRIES = 3;
+    for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+      const url = new URL(this.hubUrl + path);
+      if (opts.query) {
+        for (const [k, v] of Object.entries(opts.query)) {
+          if (v !== undefined && v !== null) url.searchParams.set(k, String(v));
+        }
       }
-    }
-    const headers = { 'Content-Type': 'application/json' };
-    if (opts.token) headers['Authorization'] = `Bearer ${opts.token}`;
+      const headers = { 'Content-Type': 'application/json' };
+      if (opts.token) headers['Authorization'] = `Bearer ${opts.token}`;
 
-    let res;
-    try {
-      res = await fetch(url.toString(), {
-        method,
-        headers,
-        body: opts.body ? JSON.stringify(opts.body) : undefined,
-      });
-    } catch (err) {
-      const hint = this._errorHint(path, 'network');
-      throw new Error(
-        `[EvoMap] 网络错误 ${method} ${path}: ${err.message}\n下一步建议: ${hint}`
-      );
-    }
+      let res;
+      try {
+        res = await fetch(url.toString(), {
+          method,
+          headers,
+          body: opts.body ? JSON.stringify(opts.body) : undefined,
+        });
+      } catch (err) {
+        const hint = this._errorHint(path, 'network');
+        throw new Error(
+          `[EvoMap] 网络错误 ${method} ${path}: ${err.message}\n下一步建议: ${hint}`
+        );
+      }
 
-    const text = await res.text();
-    let json = null;
-    try {
-      json = text ? JSON.parse(text) : null;
-    } catch {
-      // 非 JSON 响应
-    }
+      const text = await res.text();
+      let json = null;
+      try {
+        json = text ? JSON.parse(text) : null;
+      } catch {
+        // 非 JSON 响应
+      }
 
-    if (!res.ok) {
-      const hint = this._errorHint(path, `http_${res.status}`);
-      const bodyPreview = text.slice(0, 500);
-      const err = new Error(
-        `[EvoMap] HTTP ${res.status} ${method} ${path}\n响应体: ${bodyPreview}\n下一步建议: ${hint}`
-      );
-      err.status = res.status;
-      err.body = json || text;
-      throw err;
+      if (!res.ok) {
+        // 429 限流：从响应体读取 retry_after_ms，等待后重试
+        if (res.status === 429 && attempt < MAX_RETRIES) {
+          let retryMs = 5000;
+          try {
+            const body = JSON.parse(text);
+            retryMs = (body.retry_after_ms || 5000) + 500;
+          } catch {}
+          await new Promise((r) => setTimeout(r, retryMs));
+          continue;
+        }
+        const hint = this._errorHint(path, `http_${res.status}`);
+        const bodyPreview = text.slice(0, 500);
+        const err = new Error(
+          `[EvoMap] HTTP ${res.status} ${method} ${path}\n响应体: ${bodyPreview}\n下一步建议: ${hint}`
+        );
+        err.status = res.status;
+        err.body = json || text;
+        throw err;
+      }
+      return json;
     }
-    return json;
   }
 
   /**
@@ -351,15 +365,87 @@ export class EvoMapClient {
 
   /**
    * 获取能力链资产列表
+   * 先尝试官方 chain 端点，若返回空则从 published-by-me 构建
    * @param {string} nodeId
    * @param {string} nodeSecret
    * @param {string} chainId
    * @returns {Promise<object>}
    */
   async getChain(nodeId, nodeSecret, chainId) {
-    return this._request('GET', `/a2a/assets/chain/${encodeURIComponent(chainId)}`, {
+    try {
+      const cr = await this._request('GET', `/a2a/assets/chain/${encodeURIComponent(chainId)}`, {
+        token: nodeSecret,
+      });
+      if ((cr?.assets || []).length > 0) return cr;
+      // Fallback: build chain from published assets via parent/reused_asset_id
+      const chain = await this.buildChainFromPublished(nodeId, nodeSecret, chainId);
+      return chain;
+    } catch (err) {
+      if (err.status === 401 || err.status === 404) {
+        const chain = await this.buildChainFromPublished(nodeId, nodeSecret, chainId);
+        return chain;
+      }
+      throw err;
+    }
+  }
+
+  /**
+   * 从 published-by-me 中溯源构建能力链
+   * 按 parent/reused_asset_id 关系追踪 A→B→C 链
+   * @param {string} nodeId
+   * @param {string} nodeSecret
+   * @param {string} chainId
+   * @returns {Promise<object>}
+   */
+  async buildChainFromPublished(nodeId, nodeSecret, chainId) {
+    const res = await this._request('GET', '/a2a/assets/published-by-me', {
       token: nodeSecret,
+      query: { node_id: nodeId, status: 'all', type: 'Capsule' },
     });
+    const allCapsules = (res?.assets || []).filter(a => a.asset_type === 'Capsule');
+    // Build relationship map: for each capsule, find its parent
+    const byParent = {};
+    for (const c of allCapsules) {
+      const parentId = c.payload?.reused_asset_id || c.payload?.parent || c.related_asset_id;
+      if (parentId) {
+        (byParent[parentId] = byParent[parentId] || []).push(c);
+      }
+    }
+    // Find root nodes (those without parents) and trace forward
+    const roots = allCapsules.filter(c => {
+      const hasParent = !!(c.payload?.reused_asset_id || c.payload?.parent || c.related_asset_id);
+      return !hasParent;
+    });
+    const chainAssets = [];
+    const visited = new Set();
+    function walk(capsule) {
+      if (!capsule || visited.has(capsule.asset_id)) return;
+      visited.add(capsule.asset_id);
+      chainAssets.push({
+        asset_id: capsule.asset_id,
+        type: 'Capsule',
+        summary: capsule.summary || capsule.payload?.summary || '',
+        outcome: capsule.payload?.outcome || { status: 'unknown' },
+        confidence: capsule.confidence || capsule.payload?.confidence || 0,
+        parent: capsule.payload?.parent || null,
+        reused_asset_id: capsule.payload?.reused_asset_id || null,
+        source_type: capsule.payload?.source_type || '',
+        agent: capsule.source_node_alias || capsule.source_node_id || '',
+        status: capsule.status || 'unknown',
+      });
+      const children = byParent[capsule.asset_id];
+      if (children) {
+        for (const child of children) walk(child);
+      }
+    }
+    for (const root of roots) walk(root);
+    if (chainAssets.length === 0 && allCapsules.length > 0) {
+      // No parent chain found; use all capsules with their relationships
+      for (const c of allCapsules) {
+        if (!visited.has(c.asset_id)) walk(c);
+      }
+    }
+    return { chain_id: chainId || 'derived', assets: chainAssets, count: chainAssets.length };
   }
 
   /**
@@ -377,23 +463,74 @@ export class EvoMapClient {
 
   /**
    * 获取积分流水
+   * 真实 API 可能返回 401（需用户浏览器 session），此时 fallback 到心跳 credit_balance
    * @param {string} nodeId
    * @param {string} nodeSecret
    * @param {string} agentId - 通常等于 nodeId
    * @returns {Promise<object>}
    */
   async getEarnings(nodeId, nodeSecret, agentId) {
-    return this._request('GET', `/billing/earnings/${encodeURIComponent(agentId)}`, {
+    try {
+      return await this._request('GET', `/billing/earnings/${encodeURIComponent(agentId)}`, {
+        token: nodeSecret,
+      });
+    } catch (err) {
+      if (err.status === 401) {
+        // billing/earnings requires user-level auth (web session), not node_secret
+        // Fallback: get credit_balance from heartbeat
+        try {
+          const hb = await this.heartbeat(nodeId, nodeSecret);
+          const balance = hb?.credit_balance ?? 0;
+          return {
+            agent_id: agentId,
+            error: 'earnings_requires_user_session',
+            error_detail: '/billing/earnings requires web session auth; use heartbeat credit_balance as approximation',
+            entries: [],
+            total: 0,
+            credit_balance: balance,
+          };
+        } catch {
+          return {
+            agent_id: agentId,
+            error: 'earnings_unavailable',
+            entries: [],
+            total: 0,
+            credit_balance: null,
+          };
+        }
+      }
+      throw err;
+    }
+  }
+
+  /**
+   * 获取节点声誉详情
+   */
+  async getNode(nodeId, nodeSecret, targetNodeId) {
+    return this._request('GET', `/a2a/nodes/${encodeURIComponent(targetNodeId)}`, {
       token: nodeSecret,
     });
   }
 
   /**
-   * 对 bounty 出价
+   * 对悬赏出价/认领（bid/place）
+   * @param {string} nodeId
+   * @param {string} nodeSecret
+   * @param {string} bountyId - task_id 或 bounty_id
+   * @param {number} bidAmount - 出价金额（0 = 免费接单）
+   * @returns {Promise<object>}
    */
-  async bidPlace(nodeId, nodeSecret, bountyId, amount, message) {
+  /**
+   * 对悬赏出价/认领（bid/place）
+   * @param {string} nodeId
+   * @param {string} nodeSecret
+   * @param {string} bountyId - task_id 或 bounty_id
+   * @param {number} bidAmount - 出价金额（0 = 免费接单）
+   * @returns {Promise<object>}
+   */
+  async bidPlace(nodeId, nodeSecret, bountyId, bidAmount = 0) {
     return this._request('POST', '/a2a/bid/place', {
-      body: { bounty_id: bountyId, sender_id: nodeId, amount, message },
+      body: { bounty_id: bountyId, node_id: nodeId, bid_amount: bidAmount },
       token: nodeSecret,
     });
   }
